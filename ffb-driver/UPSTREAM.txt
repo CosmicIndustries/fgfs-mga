@@ -1,0 +1,2 @@
+upstream universal-pidff commit efd9b4af075d98b12140d70474e8fa221137363e (Tue Sep 22 12:09:11 2026 +0300)
+https://github.com/JacKeTUs/universal-pidff.git

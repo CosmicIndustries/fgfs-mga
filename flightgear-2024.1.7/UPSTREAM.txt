@@ -1,0 +1,2 @@
+simgear: c903a7b790473f14e196fbec91d5ecd828f7d386  (HEAD -> mga-2024.1.7, tag: 2024.1.7)
+flightgear: 7241807173248abd838e2ab11337fbc5b2ae20b0  (HEAD -> mga-2024.1.7, tag: 2024.1.7)

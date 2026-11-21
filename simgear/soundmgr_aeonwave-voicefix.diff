@@ -1,0 +1,37 @@
+--- soundmgr_aeonwave.cxx.before-voicefix
++++ soundmgr_aeonwave.cxx
+@@ -250,7 +250,9 @@
+ 
+     if (is_working()) {
+         _active = false;
+-        TRY( d->_aax.set(AAX_PROCESSED) );
++        enum aaxState mixer = d->_aax.state();
++        if (mixer != AAX_STOPPED && mixer != AAX_PROCESSED)
++            TRY( d->_aax.set(AAX_STOPPED) );
+ 
+         _renderer = "unknown";
+         _vendor = "unknown";
+@@ -562,6 +564,7 @@
+         if (bufid == SGSoundMgr::FAILED_BUFFER ||
+             bufid == SGSoundMgr::NO_BUFFER)
+         {
++            sample->no_valid_source();
+             release_source(sample->get_source());
+             return;
+         }
+@@ -631,9 +634,12 @@
+ bool SGSoundMgr::is_sample_stopped(SGSoundSample *sample)
+ {
+ #ifdef ENABLE_SOUND
+-    assert(sample->is_valid_source());
+-    aax::Emitter& emitter = d->get_emitter(sample->get_source());
+-    int result = emitter.state();
++    // A sample whose source was released (or never had a source) is stopped, as with OpenAL.
++    // cleanup_removed_samples() asks right after sample_stop() released it.
++    if (!sample->is_valid_source()) return true;
++    auto source_it = d->_sources.find(sample->get_source());
++    if (source_it == d->_sources.end()) return true;
++    int result = source_it->second.state();
+     return (result == AAX_PROCESSED);
+ #else
+     return true;

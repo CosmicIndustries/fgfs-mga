@@ -1,0 +1,4 @@
+src/GUI/TrainingStatsModel.cxx
+src/GUI/TrainingStatsModel.hxx
+src/GUI/assets/mga-region-map.svg
+src/GUI/qml/Training.qml

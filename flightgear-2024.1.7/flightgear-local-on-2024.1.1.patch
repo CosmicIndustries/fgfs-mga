@@ -1,0 +1,1201 @@
+diff --git a/CMakeModules/Installation.cmake b/CMakeModules/Installation.cmake
+index 10e97b45a..c5fe87af9 100644
+--- a/CMakeModules/Installation.cmake
++++ b/CMakeModules/Installation.cmake
+@@ -118,8 +118,13 @@ if (APPLE)
+     # OSG plugins
+     install(DIRECTORY ${OSG_PLUGINS_DIR} DESTINATION $<TARGET_BUNDLE_CONTENT_DIR:fgfs>/PlugIns)
+ 
+-    # add extra utilites to the bundle
+-    install(TARGETS fgcom fgjs fgelev DESTINATION $<TARGET_BUNDLE_CONTENT_DIR:fgfs>/MacOS)
++    # add extra utilities to the bundle
++    set(FLIGHTGEAR_BUNDLE_TARGETS fgjs fgelev)
++    if (TARGET fgcom)
++        list(APPEND FLIGHTGEAR_BUNDLE_TARGETS fgcom)
++    endif()
++    install(TARGETS ${FLIGHTGEAR_BUNDLE_TARGETS}
++        DESTINATION $<TARGET_BUNDLE_CONTENT_DIR:fgfs>/MacOS)
+ 
+     if (TARGET sentry::sentry)
+         install(FILES $<TARGET_FILE:sentry::sentry> DESTINATION $<TARGET_BUNDLE_CONTENT_DIR:fgfs>/Frameworks)
+@@ -154,7 +159,11 @@ if (LINUX)
+     install(DIRECTORY ${OSG_PLUGINS_DIR} 
+         DESTINATION appdir/usr/lib 
+         COMPONENT packaging EXCLUDE_FROM_ALL)
+-    install(TARGETS fgcom fgjs fgelev fgfs 
++    set(FLIGHTGEAR_APPDIR_TARGETS fgjs fgelev fgfs)
++    if (TARGET fgcom)
++        list(APPEND FLIGHTGEAR_APPDIR_TARGETS fgcom)
++    endif()
++    install(TARGETS ${FLIGHTGEAR_APPDIR_TARGETS}
+         DESTINATION appdir/usr/bin 
+         COMPONENT packaging EXCLUDE_FROM_ALL)
+ 
+diff --git a/src/FDM/fdm_shell.cxx b/src/FDM/fdm_shell.cxx
+index 7b34f076e..36e3c9253 100644
+--- a/src/FDM/fdm_shell.cxx
++++ b/src/FDM/fdm_shell.cxx
+@@ -187,6 +187,10 @@ void FDMShell::doInitAndBind()
+                                             string{"The aircraft flight dynamics model contains errors and cannot be used. ("} + e.what() + ")");
+     }
+ 
++    // Recreate the snapshot destination so attributes copied
++    // during the earlier snapshot cannot prevent subsequent writes.
++    _initialFdmProperties = new SGPropertyNode;
++
+     if (!copyProperties(_props->getNode("fdm", true),
+                         _initialFdmProperties)) {
+         SG_LOG(SG_FLIGHT, SG_ALERT, "Failed to save initial FDM property state");
+diff --git a/src/GUI/CMakeLists.txt b/src/GUI/CMakeLists.txt
+index f4fc01a6e..7366fc7b4 100644
+--- a/src/GUI/CMakeLists.txt
++++ b/src/GUI/CMakeLists.txt
+@@ -104,7 +104,9 @@ if (HAVE_QT)
+ 
+ 
+ 
+-    add_library(fglauncher QtLauncher.cxx
++    find_package(SQLite3 REQUIRED MODULE)
++
++add_library(fglauncher QtLauncher.cxx
+                             QtLauncher.hxx
+                             SettingsWrapper.hxx
+                             LauncherMainWindow.hxx
+@@ -145,6 +147,8 @@ if (HAVE_QT)
+                             RecentAircraftModel.hxx
+                             RecentLocationsModel.cxx
+                             RecentLocationsModel.hxx
++                            TrainingStatsModel.cxx
++                            TrainingStatsModel.hxx
+                             LauncherController.cxx
+                             LauncherController.hxx
+                             AddOnsController.cxx
+@@ -185,6 +189,14 @@ if (HAVE_QT)
+         Qt${QT_VERSION_MAJOR}::Svg 
+         SimGearCore)
+ 
++if(SQLite3_INCLUDE_DIRS)
++    target_include_directories(fglauncher PRIVATE ${SQLite3_INCLUDE_DIRS})
++elseif(SQLite3_INCLUDE_DIR)
++    target_include_directories(fglauncher PRIVATE ${SQLite3_INCLUDE_DIR})
++endif()
++target_link_libraries(fglauncher PRIVATE ${SQLite3_LIBRARIES})
++
++
+     add_library(fgqmlui 
+                         PropertyItemModel.cxx
+                         PropertyItemModel.hxx
+diff --git a/src/GUI/LauncherController.cxx b/src/GUI/LauncherController.cxx
+index 85567eb62..76942c557 100644
+--- a/src/GUI/LauncherController.cxx
++++ b/src/GUI/LauncherController.cxx
+@@ -9,6 +9,18 @@
+ #include <QJSEngine>
+ #include <QMessageBox>
+ #include <QNetworkAccessManager>
++#include <QUrlQuery>
++#include <QRegularExpression>
++#include <QNetworkRequest>
++#include <QStandardPaths>
++#include <QSaveFile>
++#include <QImage>
++#include <QDir>
++#include <QNetworkReply>
++#include <QJsonValue>
++#include <QJsonObject>
++#include <QJsonDocument>
++#include <QJsonArray>
+ #include <QNetworkDiskCache>
+ #include <QPushButton>
+ #include <QQmlComponent>
+@@ -78,6 +90,7 @@ LauncherController::LauncherController(QObject *parent, QWindow* window) :
+     m_location = new LocationController(this);
+     m_locationHistory = new RecentLocationsModel(this);
+     m_selectedAircraftInfo = new QmlAircraftInfo(this);
++    m_trainingStats = new TrainingStatsModel(this);
+ 
+     m_config = new LaunchConfig(this);
+     connect(m_config, &LaunchConfig::collect, this, &LauncherController::collectAircraftArgs);
+@@ -670,6 +683,336 @@ simgear::pkg::PackageRef LauncherController::packageForAircraftURI(QUrl uri) con
+     return globals->packageRoot()->getPackageById(ident.toStdString());
+ }
+ 
++QVariantMap LauncherController::selectedAirportContext() const
++{
++    QVariantMap result;
++    result.insert(QStringLiteral("valid"), false);
++
++    if (!m_location) {
++        qInfo() << "[MGA Weather] no LocationController";
++        return result;
++    }
++
++    QmlPositioned* base = m_location->baseLocation();
++    if (!base || !base->valid()) {
++        qInfo() << "[MGA Weather] no valid selected base location";
++        return result;
++    }
++
++    const FGPositionedRef positioned = base->inner();
++    if (!positioned || !FGPositioned::isAirportType(positioned.ptr())) {
++        qInfo() << "[MGA Weather] selected base is not an airport";
++        return result;
++    }
++
++    const SGGeod geod = positioned->geod();
++    if (!geod.isValid()) {
++        qInfo() << "[MGA Weather] selected airport has invalid coordinates:" << QString::fromStdString(positioned->ident());
++        return result;
++    }
++
++    result.insert(QStringLiteral("valid"), true);
++    result.insert(QStringLiteral("ident"), QString::fromStdString(positioned->ident()));
++    result.insert(QStringLiteral("name"), QString::fromStdString(positioned->name()));
++    result.insert(QStringLiteral("latitudeDeg"), geod.getLatitudeDeg());
++    result.insert(QStringLiteral("longitudeDeg"), geod.getLongitudeDeg());
++    return result;
++}
++
++void LauncherController::requestLocationWeather(QString station, double latitude, double longitude)
++{
++    station = station.trimmed().toUpper();
++    qInfo() << "[MGA Weather] request for" << station << "lat" << latitude << "lon" << longitude;
++    static const QRegularExpression stationPattern(QStringLiteral("^[A-Z0-9]{3,4}$"));
++    if (!stationPattern.match(station).hasMatch()) {
++        emit locationWeatherUpdated(station, QString(), QString(), tr("Selected location has no usable airport identifier."));
++        emit locationSatelliteUpdated(station, QString(), QString(), QString(), tr("Selected location has no coordinates."));
++        return;
++    }
++
++    QNetworkAccessManager* manager = findChild<QNetworkAccessManager*>(QStringLiteral("mgaLocationContextNetwork"));
++    if (!manager) {
++        manager = new QNetworkAccessManager(this);
++        manager->setObjectName(QStringLiteral("mgaLocationContextNetwork"));
++    }
++
++    // Aviation Weather Center's public API does not enable browser CORS; issue
++    // requests from Qt's native network stack instead of QML XMLHttpRequest.
++    QUrl metarUrl(QStringLiteral("https://aviationweather.gov/api/data/metar"));
++    QUrlQuery metarQuery;
++    metarQuery.addQueryItem(QStringLiteral("ids"), station);
++    metarQuery.addQueryItem(QStringLiteral("format"), QStringLiteral("json"));
++    metarQuery.addQueryItem(QStringLiteral("hours"), QStringLiteral("3"));
++    metarUrl.setQuery(metarQuery);
++
++    QNetworkRequest metarRequest(metarUrl);
++    metarRequest.setRawHeader("User-Agent", "FlightGearLauncher/1.0 (https://www.flightgear.org)");
++    metarRequest.setRawHeader("Accept", "application/json");
++    QNetworkReply* metarReply = manager->get(metarRequest);
++    connect(metarReply, &QNetworkReply::finished, this, [this, metarReply, station]() {
++        const QByteArray body = metarReply->readAll();
++        const int status = metarReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++        const auto networkError = metarReply->error();
++        const QString networkErrorText = metarReply->errorString();
++        metarReply->deleteLater();
++
++        if (networkError != QNetworkReply::NoError || status >= 400) {
++            qWarning() << "[MGA Weather] METAR failure" << station << "HTTP" << status << networkErrorText;
++            emit locationWeatherUpdated(station, QString(), QString(),
++                tr("Weather service request failed (%1). %2").arg(status).arg(networkErrorText));
++            return;
++        }
++
++        QJsonParseError parseError;
++        const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
++        if (parseError.error != QJsonParseError::NoError || !document.isArray() || document.array().isEmpty()) {
++            emit locationWeatherUpdated(station, QString(), QString(), tr("No current METAR observation is available for %1.").arg(station));
++            return;
++        }
++
++        const QJsonObject metar = document.array().first().toObject();
++        auto field = [&metar](const QString& key) -> QString {
++            const QJsonValue value = metar.value(key);
++            if (value.isString()) return value.toString();
++            if (value.isDouble()) return QString::number(value.toDouble(), 'g', 6);
++            if (value.isBool()) return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
++            return QString();
++        };
++
++        QStringList parts;
++        const QString category = field(QStringLiteral("fltCat"));
++        if (!category.isEmpty()) parts << tr("Flight category: %1").arg(category);
++
++        const QString windDirection = field(QStringLiteral("wdir"));
++        const QString windSpeed = field(QStringLiteral("wspd"));
++        const QString windGust = field(QStringLiteral("wgst"));
++        if (!windSpeed.isEmpty()) {
++            QString wind = tr("Wind %1 at %2 kt").arg(windDirection.isEmpty() ? QStringLiteral("—") : windDirection,
++                                                        windSpeed);
++            if (!windGust.isEmpty() && windGust != QStringLiteral("0")) wind += tr(" gusting %1 kt").arg(windGust);
++            parts << wind;
++        }
++
++        const QString visibility = field(QStringLiteral("visib"));
++        if (!visibility.isEmpty()) parts << tr("Visibility %1 SM").arg(visibility);
++        const QString altimeter = field(QStringLiteral("altim"));
++        if (!altimeter.isEmpty()) parts << tr("Altimeter %1 inHg").arg(altimeter);
++        const QString temperature = field(QStringLiteral("temp"));
++        const QString dewpoint = field(QStringLiteral("dewp"));
++        if (!temperature.isEmpty()) {
++            QString temp = tr("Temperature %1 °C").arg(temperature);
++            if (!dewpoint.isEmpty()) temp += tr(" / dew point %1 °C").arg(dewpoint);
++            parts << temp;
++        }
++
++        QStringList cloudLayers;
++        const QJsonValue cloudsValue = metar.value(QStringLiteral("clouds"));
++        if (cloudsValue.isArray()) {
++            for (const QJsonValue& cloudValue : cloudsValue.toArray()) {
++                const QJsonObject cloud = cloudValue.toObject();
++                QString layer = cloud.value(QStringLiteral("cover")).toString();
++                const QJsonValue base = cloud.value(QStringLiteral("base"));
++                if (base.isDouble()) layer += tr(" %1 ft").arg(base.toInt());
++                if (!layer.isEmpty()) cloudLayers << layer;
++            }
++        }
++        if (!cloudLayers.isEmpty()) parts << tr("Clouds: %1").arg(cloudLayers.join(QStringLiteral(", ")));
++
++        const QString raw = field(QStringLiteral("rawOb"));
++        const QString summary = parts.isEmpty() ? tr("Latest METAR received for %1.").arg(station)
++                                                : parts.join(QStringLiteral("  |  "));
++        qInfo() << "[MGA Weather] METAR success" << station << "raw=" << raw;
++        emit locationWeatherUpdated(station, summary, raw, QString());
++    });
++
++    const bool validCoordinates = latitude >= -90.0 && latitude <= 90.0 &&
++                                  longitude >= -180.0 && longitude <= 180.0;
++    if (!validCoordinates) {
++        emit locationSatelliteUpdated(station, QString(), QString(), QString(), tr("Airport coordinates are invalid."));
++        return;
++    }
++
++    // Pull the image through Qt's network stack and cache it locally. This avoids
++    // relying on QML's remote-image loader and guarantees the preview is actually fetched.
++    auto pullSatellite = [this, manager, station](const QString& imageUrl,
++                                                  const QString& loopUrl,
++                                                  const QString& region) {
++        if (imageUrl.isEmpty()) {
++            emit locationSatelliteUpdated(station, QString(), loopUrl, region, tr("No satellite image URL was found."));
++            return;
++        }
++        QNetworkRequest imageRequest{QUrl(imageUrl)};
++        imageRequest.setRawHeader("User-Agent", "FlightGearLauncher/1.0 (https://www.flightgear.org)");
++        imageRequest.setRawHeader("Accept", "image/jpeg,image/*;q=0.9,*/*;q=0.5");
++        QNetworkReply* imageReply = manager->get(imageRequest);
++        connect(imageReply, &QNetworkReply::finished, this,
++                [this, imageReply, station, imageUrl, loopUrl, region]() {
++            const QByteArray bytes = imageReply->readAll();
++            const int status = imageReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++            const auto networkError = imageReply->error();
++            const QString networkErrorText = imageReply->errorString();
++            imageReply->deleteLater();
++
++            if (networkError != QNetworkReply::NoError || status >= 400) {
++                qWarning().noquote() << "[MGA Satellite] image failure" << station << "HTTP" << status << networkErrorText << imageUrl;
++                emit locationSatelliteUpdated(station, QString(), loopUrl, region,
++                    tr("Satellite download failed (%1): %2").arg(status).arg(networkErrorText));
++                return;
++            }
++            QImage decoded;
++            if (bytes.isEmpty() || !decoded.loadFromData(bytes)) {
++                emit locationSatelliteUpdated(station, QString(), loopUrl, region,
++                    tr("Satellite service returned data that is not a usable image."));
++                return;
++            }
++
++            QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
++            if (cacheRoot.isEmpty()) cacheRoot = QDir::homePath() + QStringLiteral("/.cache/flightgear-launcher");
++            cacheRoot += QStringLiteral("/satellite");
++            if (!QDir().mkpath(cacheRoot)) {
++                emit locationSatelliteUpdated(station, QString(), loopUrl, region,
++                    tr("Could not create the satellite image cache directory."));
++                return;
++            }
++            const QString cachePath = cacheRoot + QLatin1Char('/') + station.toLower() + QStringLiteral("-regional.jpg");
++            QSaveFile file(cachePath);
++            if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
++                const QString fileError = file.errorString();
++                file.cancelWriting();
++                emit locationSatelliteUpdated(station, QString(), loopUrl, region,
++                    tr("Could not save the downloaded satellite image: %1").arg(fileError));
++                return;
++            }
++            qInfo().noquote() << "[MGA Satellite] cached" << cachePath << "bytes=" << bytes.size() << "url=" << imageUrl;
++            emit locationSatelliteUpdated(station, QUrl::fromLocalFile(cachePath).toString(), loopUrl, region, QString());
++        });
++    };
++
++    auto pullDiskSatellite = [this, manager, station](const QString& satellite) {
++        const QString imageUrl = QStringLiteral("https://cdn.star.nesdis.noaa.gov/%1/ABI/FD/GEOCOLOR/678x678.jpg").arg(satellite);
++        QNetworkRequest imageRequest{QUrl(imageUrl)};
++        imageRequest.setRawHeader("User-Agent", "FlightGearLauncher/1.0 (https://www.flightgear.org)");
++        imageRequest.setRawHeader("Accept", "image/jpeg,image/*;q=0.9,*/*;q=0.5");
++        QNetworkReply* imageReply = manager->get(imageRequest);
++        connect(imageReply, &QNetworkReply::finished, this,
++                [this, imageReply, station, satellite]() {
++            const QByteArray bytes = imageReply->readAll();
++            const int status = imageReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++            const auto networkError = imageReply->error();
++            const QString networkErrorText = imageReply->errorString();
++            imageReply->deleteLater();
++
++            if (networkError != QNetworkReply::NoError || status >= 400) {
++                emit locationDiskSatelliteUpdated(station, satellite, QString(),
++                    tr("Download failed (%1): %2").arg(status).arg(networkErrorText));
++                return;
++            }
++            QImage decoded;
++            if (bytes.isEmpty() || !decoded.loadFromData(bytes)) {
++                emit locationDiskSatelliteUpdated(station, satellite, QString(),
++                    tr("NOAA returned data that is not a usable image."));
++                return;
++            }
++
++            QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
++            if (cacheRoot.isEmpty()) cacheRoot = QDir::homePath() + QStringLiteral("/.cache/flightgear-launcher");
++            cacheRoot += QStringLiteral("/satellite");
++            if (!QDir().mkpath(cacheRoot)) {
++                emit locationDiskSatelliteUpdated(station, satellite, QString(),
++                    tr("Could not create the satellite image cache directory."));
++                return;
++            }
++            const QString cachePath = cacheRoot + QLatin1Char('/') + station.toLower()
++                + QLatin1Char('-') + satellite.toLower() + QStringLiteral("-fulldisk.jpg");
++            QSaveFile file(cachePath);
++            if (!file.open(QIODevice::WriteOnly)) {
++                emit locationDiskSatelliteUpdated(station, satellite, QString(),
++                    tr("Could not open cache file: %1").arg(file.errorString()));
++                return;
++            }
++            if (file.write(bytes) != bytes.size()) {
++                const QString fileError = file.errorString();
++                file.cancelWriting();
++                emit locationDiskSatelliteUpdated(station, satellite, QString(),
++                    tr("Could not write cache file: %1").arg(fileError));
++                return;
++            }
++            if (!file.commit()) {
++                emit locationDiskSatelliteUpdated(station, satellite, QString(),
++                    tr("Could not commit cache file: %1").arg(file.errorString()));
++                return;
++            }
++            emit locationDiskSatelliteUpdated(station, satellite,
++                QUrl::fromLocalFile(cachePath).toString(), QString());
++        });
++    };
++
++    // Pull both global views through Qt and cache them locally. The regional
++    // image below is selected from the airport's coordinates.
++    pullDiskSatellite(QStringLiteral("GOES19"));
++    pullDiskSatellite(QStringLiteral("GOES18"));
++
++    // Dedicated sectors produce genuinely regional satellite views for Alaska,
++    // Hawaii and Puerto Rico; mainland airports use the matching NOAA WFO imagery.
++    if (latitude >= 50.0 && longitude < -130.0) {
++        pullSatellite(QStringLiteral("https://cdn.star.nesdis.noaa.gov/GOES18/ABI/SECTOR/ak/GEOCOLOR/latest.jpg"),
++                      QStringLiteral("https://www.goes.noaa.gov/sector_band.php?band=GEOCOLOR&length=24&sat=G18&sector=ak"),
++                      tr("Alaska · GOES-18"));
++        return;
++    }
++    if (latitude >= 18.0 && latitude <= 23.5 && longitude >= -162.0 && longitude <= -154.0) {
++        pullSatellite(QStringLiteral("https://cdn.star.nesdis.noaa.gov/GOES18/ABI/SECTOR/hi/GEOCOLOR/latest.jpg"),
++                      QStringLiteral("https://www.goes.noaa.gov/sector_band.php?band=GEOCOLOR&length=24&sat=G18&sector=hi"),
++                      tr("Hawaii · GOES-18"));
++        return;
++    }
++    if (latitude >= 17.0 && latitude <= 20.5 && longitude >= -70.5 && longitude <= -63.0) {
++        pullSatellite(QStringLiteral("https://cdn.star.nesdis.noaa.gov/GOES19/ABI/SECTOR/pr/GEOCOLOR/latest.jpg"),
++                      QStringLiteral("https://www.goes.noaa.gov/sector_band.php?band=GEOCOLOR&length=24&sat=G19&sector=pr"),
++                      tr("Puerto Rico · GOES-19"));
++        return;
++    }
++
++    const QUrl pointsUrl(QStringLiteral("https://api.weather.gov/points/%1,%2")
++        .arg(QString::number(latitude, 'f', 4), QString::number(longitude, 'f', 4)));
++    QNetworkRequest pointsRequest(pointsUrl);
++    pointsRequest.setRawHeader("User-Agent", "FlightGearLauncher/1.0 (https://www.flightgear.org)");
++    pointsRequest.setRawHeader("Accept", "application/geo+json");
++    QNetworkReply* pointsReply = manager->get(pointsRequest);
++    connect(pointsReply, &QNetworkReply::finished, this,
++            [this, pointsReply, station, longitude, pullSatellite]() {
++        const QByteArray body = pointsReply->readAll();
++        const int status = pointsReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++        const auto networkError = pointsReply->error();
++        pointsReply->deleteLater();
++
++        QString imageUrl;
++        QString loopUrl;
++        QString region;
++        if (networkError == QNetworkReply::NoError && status < 400) {
++            const QJsonDocument document = QJsonDocument::fromJson(body);
++            const QString office = document.object().value(QStringLiteral("properties")).toObject()
++                .value(QStringLiteral("cwa")).toString().trimmed().toLower();
++            if (!office.isEmpty()) {
++                const QString satellite = longitude < -105.0 ? QStringLiteral("GOES18") : QStringLiteral("GOES19");
++                const QString satelliteCode = longitude < -105.0 ? QStringLiteral("GOES-18") : QStringLiteral("GOES-19");
++                imageUrl = QStringLiteral("https://cdn.star.nesdis.noaa.gov/WFO/%1/GEOCOLOR/latest.jpg").arg(office);
++                loopUrl = QStringLiteral("https://cdn.star.nesdis.noaa.gov/WFO/%1/GEOCOLOR/%2-%3-GEOCOLOR-600x600.gif")
++                    .arg(office, satellite, office.toUpper());
++                region = tr("WFO %1 · %2 regional imagery").arg(office.toUpper(), satelliteCode);
++            }
++        }
++        if (imageUrl.isEmpty()) {
++            const QString satellite = longitude < -105.0 ? QStringLiteral("GOES18") : QStringLiteral("GOES19");
++            const QString satCode = longitude < -105.0 ? QStringLiteral("G18") : QStringLiteral("G19");
++            imageUrl = QStringLiteral("https://cdn.star.nesdis.noaa.gov/%1/ABI/FD/GEOCOLOR/678x678.jpg").arg(satellite);
++            loopUrl = QStringLiteral("https://www.goes.noaa.gov/sector_band.php?band=GEOCOLOR&length=24&sat=%1&sector=fd").arg(satCode);
++            region = longitude < -105.0 ? tr("GOES-18 full disk") : tr("GOES-19 full disk");
++        }
++        pullSatellite(imageUrl, loopUrl, region);
++    });
++}
++
+ bool LauncherController::validateMetarString(QString metar)
+ {
+     if (metar.isEmpty()) {
+diff --git a/src/GUI/LauncherController.hxx b/src/GUI/LauncherController.hxx
+index 6aa6efdaa..63ad3e090 100644
+--- a/src/GUI/LauncherController.hxx
++++ b/src/GUI/LauncherController.hxx
+@@ -26,6 +26,7 @@
+ #include <QModelIndex>
+ #include <QSize>
+ #include <QPointF>
++#include <QVariantMap>
+ 
+ #include <simgear/package/Package.hxx>
+ #include <simgear/package/Catalog.hxx>
+@@ -38,6 +39,7 @@
+ #include "QmlAircraftInfo.hxx"
+ #include "RecentAircraftModel.hxx"
+ #include "RecentLocationsModel.hxx"
++#include "TrainingStatsModel.hxx"
+ 
+ // forward decls
+ class QTimer;
+@@ -80,6 +82,7 @@ class LauncherController : public QObject
+ 
+     Q_PROPERTY(RecentAircraftModel* aircraftHistory READ aircraftHistory CONSTANT)
+     Q_PROPERTY(RecentLocationsModel* locationHistory READ locationHistory CONSTANT)
++    Q_PROPERTY(TrainingStatsModel* trainingStatsModel MEMBER m_trainingStats CONSTANT)
+ 
+     Q_PROPERTY(bool canFly READ canFly NOTIFY canFlyChanged)
+ 
+@@ -105,6 +108,8 @@ public:
+     void initQML(int& styleTypeId);
+ 
+     Q_INVOKABLE bool validateMetarString(QString metar);
++    Q_INVOKABLE QVariantMap selectedAirportContext() const;
++    Q_INVOKABLE void requestLocationWeather(QString station, double latitude, double longitude);
+ 
+     Q_INVOKABLE void requestInstallUpdate(QUrl aircraftUri);
+ 
+@@ -230,6 +235,9 @@ public:
+ 
+     QString flyButtonLabel() const;
+ signals:
++    void locationWeatherUpdated(QString station, QString summary, QString rawMetar, QString error);
++    void locationSatelliteUpdated(QString station, QString imageUrl, QString loopUrl, QString region, QString error);
++    void locationDiskSatelliteUpdated(QString station, QString satellite, QString imageUrl, QString error);
+ 
+     void selectedAircraftChanged(QUrl selectedAircraft);
+     void selectedAircraftStateChanged();
+@@ -324,6 +332,7 @@ private:
+     QStringList m_settingsSummary, m_environmentSummary;
+     RecentAircraftModel* m_aircraftHistory = nullptr;
+     RecentLocationsModel* m_locationHistory = nullptr;
++    TrainingStatsModel* m_trainingStats = nullptr;
+ 	QSize m_minWindowSize;
+     QTimer* m_subsystemIdleTimer = nullptr;
+ 
+diff --git a/src/GUI/qml/Launcher.qml b/src/GUI/qml/Launcher.qml
+index ec2533c97..2bdd2ee96 100644
+--- a/src/GUI/qml/Launcher.qml
++++ b/src/GUI/qml/Launcher.qml
+@@ -21,6 +21,7 @@ Item {
+         // permanently so that collecting args works. So we instantiate them down below, and toggle the visiblity
+         // of them and the loader using a state.
+ 
++        ListElement { title: qsTr("Training"); pageSource: "qrc:///qml/Training.qml"; iconPath: "image://colored-icon/toolbox-aircraft"; state:"loader" }
+         ListElement { title: qsTr("Environment"); pageSource: ""; iconPath: "image://colored-icon/toolbox-environment"; state:"environment"  }
+         ListElement { title: qsTr("Settings"); pageSource: ""; iconPath: "image://colored-icon/toolbox-settings"; state:"settings" }
+ 
+@@ -38,7 +39,8 @@ Item {
+             title: qsTr("Location"); pageSource: "qrc:///qml/Location.qml";
+             iconPath: "image://colored-icon/toolbox-location"; state:"loader"
+         }
+-    }
++        ListElement { title: qsTr("Training"); pageSource: "qrc:///qml/Training.qml"; iconPath: "image://colored-icon/toolbox-aircraft"; state:"loader" }
++}
+ 
+ 
+     Component.onCompleted:
+diff --git a/src/GUI/qml/Location.qml b/src/GUI/qml/Location.qml
+index 3f0ce7630..a527aadff 100644
+--- a/src/GUI/qml/Location.qml
++++ b/src/GUI/qml/Location.qml
+@@ -7,6 +7,119 @@ import FlightGear.Launcher 1.0
+ Item {
+     id: root
+ 
++    property bool mgaSatellitePanelOpen: false
++    property string mgaSelectedAirportIdent: ""
++    property string mgaLiveWeatherSummary: qsTr("Select an airport to load live weather.")
++    property string mgaLiveWeatherRaw: ""
++    property string mgaSatelliteStatus: qsTr("Select an airport to load regional satellite imagery.")
++    property string mgaSatelliteLoopUrl: ""
++    property string mgaSatelliteRegion: ""
++    property string mgaDiskSatelliteStatus: qsTr("Select an airport to load full-disk satellite imagery.")
++    property bool mgaGoesEastDiskReady: false
++    property bool mgaGoesWestDiskReady: false
++    property string mgaLastAirportRequestKey: ""
++
++    function refreshAirportContext(forceRefresh)
++    {
++        // Use a primitive context map derived in C++ from the launcher's current base airport.
++        // This avoids QVariant/Q_GADGET conversion differences between Qt 5 minor versions.
++        var airport = _launcher.selectedAirportContext();
++        var station = airport && airport.valid ? String(airport.ident).toUpperCase() : "";
++        var latitude = airport && airport.valid ? Number(airport.latitudeDeg) : NaN;
++        var longitude = airport && airport.valid ? Number(airport.longitudeDeg) : NaN;
++
++        if (station === "" || !isFinite(latitude) || !isFinite(longitude)) {
++            root.mgaSelectedAirportIdent = "";
++            root.mgaLiveWeatherSummary = qsTr("No valid airport is selected. Select an airport from the Location results first.");
++            root.mgaLiveWeatherRaw = "";
++            root.mgaSatelliteStatus = qsTr("Satellite imagery needs a selected airport with coordinates.");
++            root.mgaDiskSatelliteStatus = qsTr("Full-disk imagery loads after an airport is selected.");
++            root.mgaSatelliteLoopUrl = "";
++            root.mgaSatelliteRegion = "";
++            root.mgaGoesEastDiskReady = false;
++            root.mgaGoesWestDiskReady = false;
++            mgaGoesSe.source = "";
++            mgaGoesEastDisk.source = "";
++            mgaGoesWestDisk.source = "";
++            root.mgaLastAirportRequestKey = "";
++            return;
++        }
++
++        var requestKey = station + "|" + latitude.toFixed(4) + "|" + longitude.toFixed(4);
++        root.mgaSelectedAirportIdent = station;
++        if (!root.mgaSatellitePanelOpen && !forceRefresh) {
++            root.mgaLiveWeatherSummary = qsTr("Open Satellite weather to load live conditions for %1.").arg(station);
++            root.mgaSatelliteStatus = qsTr("Satellite region for %1 is ready to load.").arg(station);
++            root.mgaDiskSatelliteStatus = qsTr("Full-disk imagery loads when the panel is open.");
++            return;
++        }
++        if (!forceRefresh && requestKey === root.mgaLastAirportRequestKey) return;
++        root.mgaLastAirportRequestKey = requestKey;
++
++        root.mgaLiveWeatherSummary = qsTr("Loading the latest METAR for %1…").arg(station);
++        root.mgaLiveWeatherRaw = "";
++        root.mgaSatelliteStatus = qsTr("Downloading regional satellite imagery for %1…").arg(station);
++        root.mgaDiskSatelliteStatus = qsTr("Downloading GOES-19 and GOES-18 full-disk imagery…");
++        root.mgaSatelliteLoopUrl = "";
++        root.mgaSatelliteRegion = "";
++        root.mgaGoesEastDiskReady = false;
++        root.mgaGoesWestDiskReady = false;
++        mgaGoesSe.source = "";
++        mgaGoesEastDisk.source = "";
++        mgaGoesWestDisk.source = "";
++        _launcher.requestLocationWeather(station, latitude, longitude);
++    }
++
++    Connections {
++        target: _location
++        function onBaseLocationChanged() {
++            root.refreshAirportContext(root.mgaSatellitePanelOpen);
++        }
++    }
++
++    Connections {
++        target: _launcher
++        function onLocationWeatherUpdated(station, summary, rawMetar, error) {
++            if (String(station).toUpperCase() !== root.mgaSelectedAirportIdent) return;
++            root.mgaLiveWeatherSummary = error !== ""
++                    ? qsTr("Live weather unavailable: %1").arg(error) : summary;
++            root.mgaLiveWeatherRaw = rawMetar || "";
++        }
++        function onLocationSatelliteUpdated(station, imageUrl, loopUrl, region, error) {
++            if (String(station).toUpperCase() !== root.mgaSelectedAirportIdent) return;
++            root.mgaSatelliteLoopUrl = loopUrl || "";
++            root.mgaSatelliteRegion = region || "";
++            if (error !== "" || imageUrl === "") {
++                root.mgaSatelliteStatus = qsTr("Satellite imagery unavailable: %1").arg(error);
++                return;
++            }
++            root.mgaSatelliteStatus = qsTr("Satellite image loaded for %1 · %2").arg(station).arg(root.mgaSatelliteRegion);
++            mgaGoesSe.source = "";
++            mgaGoesSe.source = imageUrl;
++        }
++        function onLocationDiskSatelliteUpdated(station, satellite, imageUrl, error) {
++            if (String(station).toUpperCase() !== root.mgaSelectedAirportIdent) return;
++            if (error !== "" || imageUrl === "") {
++                root.mgaDiskSatelliteStatus = qsTr("%1 full-disk imagery unavailable: %2").arg(satellite).arg(error);
++                return;
++            }
++            if (String(satellite).toUpperCase() === "GOES19") {
++                mgaGoesEastDisk.source = "";
++                mgaGoesEastDisk.source = imageUrl;
++                root.mgaGoesEastDiskReady = true;
++            } else if (String(satellite).toUpperCase() === "GOES18") {
++                mgaGoesWestDisk.source = "";
++                mgaGoesWestDisk.source = imageUrl;
++                root.mgaGoesWestDiskReady = true;
++            }
++            if (root.mgaGoesEastDiskReady && root.mgaGoesWestDiskReady) {
++                root.mgaDiskSatelliteStatus = qsTr("GOES-19 East and GOES-18 West full-disk images loaded.");
++            } else {
++                root.mgaDiskSatelliteStatus = qsTr("Loaded %1 full-disk imagery; waiting for the other satellite.").arg(satellite);
++            }
++        }
++    }
++
+     property bool __searchActive: false
+     property string lastSearch
+ 
+@@ -42,6 +155,7 @@ Item {
+     {
+         selectedLocation.guid = 0;
+         _location.carrier = name;
++        root.refreshAirportContext();
+         detailLoader.sourceComponent = carrierDetails
+     }
+ 
+@@ -63,6 +177,7 @@ Item {
+         } else {
+             _location.showHistoryInSearchModel();
+         }
++        root.refreshAirportContext();
+     }
+ 
+     Positioned {
+@@ -180,6 +295,275 @@ Item {
+         }
+     }
+ 
++    // OSM regional reference map; independent of satellite panel installation.
++    property bool mgaOsmPanelOpen: false
++    Button {
++        id: mgaOsmToggle
++        z: 103
++        anchors.left: parent.left
++        anchors.top: parent.top
++        anchors.margins: Style.margin
++        text: root.mgaOsmPanelOpen ? qsTr("Hide OSM map") : qsTr("OpenStreetMap")
++        font.pixelSize: Style.baseFontPixelSize
++        height: Style.strutSize * 0.72
++        onClicked: root.mgaOsmPanelOpen = !root.mgaOsmPanelOpen
++    }
++    Rectangle {
++        id: mgaOsmPanel
++        z: 102
++        visible: root.mgaOsmPanelOpen
++        anchors.left: parent.left
++        anchors.top: mgaOsmToggle.bottom
++        anchors.leftMargin: Style.margin
++        anchors.topMargin: Style.margin / 2
++        width: Math.min(350, root.width * 0.42)
++        height: Math.min(420, root.height * 0.62)
++        color: Style.backgroundColor
++        border.color: Style.minorFrameColor
++        border.width: 1
++        radius: Style.roundRadius
++        Column {
++            anchors.fill: parent
++            anchors.margins: Style.margin / 2
++            spacing: Style.margin / 3
++            StyledText {
++                width: parent.width
++                text: qsTr("OpenStreetMap · Southeast Georgia")
++                font.pixelSize: Style.headingFontPixelSize
++                wrapMode: Text.WordWrap
++            }
++            Image {
++                width: parent.width
++                height: Math.min(104, mgaOsmPanel.height * 0.27)
++                source: "qrc:/mga-region-map.svg"
++                fillMode: Image.PreserveAspectFit
++                asynchronous: true
++            }
++            Rectangle {
++                width: parent.width
++                height: Math.min(112, mgaOsmPanel.height * 0.38)
++                radius: Style.roundRadius
++                color: Style.backgroundColor
++                border.color: Style.minorFrameColor
++                Column {
++                    anchors.fill: parent
++                    anchors.margins: Style.margin
++                    spacing: Style.margin / 2
++                    StyledText {
++                        width: parent.width
++                        text: qsTr("Embedded map preview unavailable")
++                        font.pixelSize: Style.headingFontPixelSize
++                        wrapMode: Text.WordWrap
++                    }
++                    StyledText {
++                        width: parent.width
++                        text: qsTr("The public OSM tile server has blocked these direct tile requests. Open the interactive map below to view Southeast Georgia.")
++                        font.pixelSize: Style.baseFontPixelSize
++                        wrapMode: Text.WordWrap
++                    }
++                }
++            }
++            StyledText {
++                width: parent.width
++                text: qsTr("Map data © OpenStreetMap contributors · regional reference only, not for navigation.")
++                font.pixelSize: Style.baseFontPixelSize
++                wrapMode: Text.WordWrap
++            }
++            Row {
++                width: parent.width
++                spacing: Style.margin / 2
++                Button {
++                    width: (parent.width - Style.margin) / 2
++                    height: Style.strutSize * 0.68
++                    font.pixelSize: Style.baseFontPixelSize
++                    text: qsTr("MGA / KMCN")
++                    onClicked: Qt.openUrlExternally("https://www.openstreetmap.org/?mlat=32.6928&mlon=-83.6492#map=12/32.6928/-83.6492")
++                }
++                Button {
++                    width: (parent.width - Style.margin) / 2
++                    height: Style.strutSize * 0.68
++                    font.pixelSize: Style.baseFontPixelSize
++                    text: qsTr("Brunswick / KBQK")
++                    onClicked: Qt.openUrlExternally("https://www.openstreetmap.org/?mlat=31.2588&mlon=-81.4665#map=12/31.2588/-81.4665")
++                }
++            }
++            Button {
++                width: parent.width
++                height: Style.strutSize * 0.68
++                font.pixelSize: Style.baseFontPixelSize
++                text: qsTr("PAHO / Homer, Alaska map")
++                onClicked: Qt.openUrlExternally("https://www.openstreetmap.org/?mlat=59.6456&mlon=-151.4766#map=12/59.6456/-151.4766")
++            }
++            Button {
++                width: parent.width
++                height: Style.strutSize * 0.68
++                font.pixelSize: Style.baseFontPixelSize
++                text: qsTr("Open interactive OSM map · Southeast Georgia")
++                onClicked: Qt.openUrlExternally("https://www.openstreetmap.org/#map=8/31.3/-81.5")
++            }
++        }
++    }
++
++    // Optional satellite-weather overlay. These are NOAA imagery previews, not a
++    // georeferenced layer on the airport map and not an automatic FlightGear weather feed.
++    Button {
++        id: mgaSatelliteToggle
++        z: 100
++        anchors.right: parent.right
++        anchors.top: parent.top
++        anchors.margins: Style.margin
++        text: root.mgaSatellitePanelOpen ? qsTr("Hide satellite weather") : qsTr("Satellite weather")
++        height: Style.strutSize * 0.72
++        font.pixelSize: Style.baseFontPixelSize
++        onClicked: {
++            root.mgaSatellitePanelOpen = !root.mgaSatellitePanelOpen;
++            if (root.mgaSatellitePanelOpen) {
++                root.refreshAirportContext(true);
++            }
++        }
++    }
++
++    Rectangle {
++        id: mgaSatelliteWeatherPanel
++        z: 99
++        visible: root.mgaSatellitePanelOpen
++        anchors.right: parent.right
++        anchors.top: mgaSatelliteToggle.bottom
++        anchors.rightMargin: Style.margin
++        anchors.topMargin: Style.margin / 2
++        width: Math.min(360, root.width * 0.42)
++        height: Math.min(430, root.height * 0.68)
++        color: Style.backgroundColor
++        border.color: Style.minorFrameColor
++        border.width: 1
++        radius: Style.roundRadius
++
++        Column {
++            anchors.fill: parent
++            anchors.margins: Style.margin
++            spacing: Style.margin / 2
++
++            StyledText {
++                width: parent.width
++                text: root.mgaSelectedAirportIdent === ""
++                      ? qsTr("Live airport weather and satellite imagery")
++                      : qsTr("Live airport weather — %1").arg(root.mgaSelectedAirportIdent)
++                font.pixelSize: Style.headingFontPixelSize
++                wrapMode: Text.WordWrap
++            }
++            StyledText {
++                width: parent.width
++                text: root.mgaLiveWeatherSummary
++                font.pixelSize: Style.baseFontPixelSize
++                wrapMode: Text.WordWrap
++            }
++            StyledText {
++                width: parent.width
++                visible: root.mgaLiveWeatherRaw !== ""
++                text: root.mgaLiveWeatherRaw
++                font.pixelSize: Style.baseFontPixelSize * 0.9
++                wrapMode: Text.WordWrap
++            }
++            StyledText {
++                width: parent.width
++                text: root.mgaSatelliteStatus
++                font.pixelSize: Style.baseFontPixelSize * 0.9
++                wrapMode: Text.WordWrap
++            }
++            StyledText {
++                width: parent.width
++                text: root.mgaDiskSatelliteStatus
++                font.pixelSize: Style.baseFontPixelSize * 0.9
++                wrapMode: Text.WordWrap
++            }
++            StyledText {
++                width: parent.width
++                text: qsTr("The selected airport's regional satellite image is downloaded and cached locally. GOES-19 East and GOES-18 West full-disk previews refresh every 5 minutes while this panel is open. External service availability may vary.")
++                wrapMode: Text.WordWrap
++                font.pixelSize: Style.baseFontPixelSize
++            }
++            Row {
++                width: parent.width
++                spacing: Style.margin / 3
++                Column {
++                    width: (parent.width - Style.margin * 2 / 3) / 3
++                    spacing: 2
++                    StyledText { width: parent.width; text: qsTr("Selected airport region"); font.pixelSize: Style.baseFontPixelSize; wrapMode: Text.WordWrap }
++                    Image {
++                        id: mgaGoesSe
++                        width: parent.width
++                        height: 72
++                        cache: false
++                        asynchronous: true
++                        fillMode: Image.PreserveAspectCrop
++                        source: ""
++                    }
++                }
++                Column {
++                    width: (parent.width - Style.margin * 2 / 3) / 3
++                    spacing: 2
++                    StyledText { width: parent.width; text: qsTr("East / disk"); font.pixelSize: Style.baseFontPixelSize; wrapMode: Text.WordWrap }
++                    Image {
++                        id: mgaGoesEastDisk
++                        width: parent.width
++                        height: 72
++                        cache: false
++                        asynchronous: true
++                        fillMode: Image.PreserveAspectCrop
++                        source: ""
++                    }
++                }
++                Column {
++                    width: (parent.width - Style.margin * 2 / 3) / 3
++                    spacing: 2
++                    StyledText { width: parent.width; text: qsTr("West / disk"); font.pixelSize: Style.baseFontPixelSize; wrapMode: Text.WordWrap }
++                    Image {
++                        id: mgaGoesWestDisk
++                        width: parent.width
++                        height: 72
++                        cache: false
++                        asynchronous: true
++                        fillMode: Image.PreserveAspectCrop
++                        source: ""
++                    }
++                }
++            }
++            Timer {
++                interval: 300000
++                repeat: true
++                running: root.mgaSatellitePanelOpen
++                onTriggered: root.refreshAirportContext(true)
++            }
++            StyledText {
++                width: parent.width
++                text: qsTr("Satellite cloud imagery is situational context only. It is not radar, NOTAM/TAF/METAR data, or an automatic simulator-weather injection. Confirm aviation weather from approved briefing sources.")
++                wrapMode: Text.WordWrap
++                font.pixelSize: Style.baseFontPixelSize
++            }
++            Button {
++                width: parent.width
++                height: Style.strutSize * 0.72
++                font.pixelSize: Style.baseFontPixelSize
++                text: root.mgaSatelliteLoopUrl === "" ? qsTr("Regional satellite loop unavailable") : qsTr("Open %1 satellite loop").arg(root.mgaSatelliteRegion)
++                onClicked: if (root.mgaSatelliteLoopUrl !== "") Qt.openUrlExternally(root.mgaSatelliteLoopUrl)
++            }
++            Button {
++                width: parent.width
++                height: Style.strutSize * 0.72
++                font.pixelSize: Style.baseFontPixelSize
++                text: qsTr("Open GOES-19 full-disk loop")
++                onClicked: Qt.openUrlExternally("https://www.goes.noaa.gov/fulldisk_band.php?band=GEOCOLOR&length=12&sat=G19")
++            }
++            Button {
++                width: parent.width
++                height: Style.strutSize * 0.72
++                font.pixelSize: Style.baseFontPixelSize
++                text: qsTr("Open GOES-18 full-disk loop")
++                onClicked: Qt.openUrlExternally("https://www.goes.noaa.gov/fulldisk_band.php?band=GEOCOLOR&length=12&sat=G18")
++            }
++        }
++    }
++
+     StyledText {
+         id: headerText
+         text: qsTr("Location")
+@@ -215,6 +599,7 @@ Item {
+             if (geod.valid) {
+                 _location.baseGeod = geod
+                 selectedLocation.guid = 0;
++                root.refreshAirportContext();
+                 detailLoader.sourceComponent = navaidDetails
+                 return;
+             }
+diff --git a/src/GUI/qml/Settings.qml b/src/GUI/qml/Settings.qml
+index 4d8064f70..d5d7eab30 100644
+--- a/src/GUI/qml/Settings.qml
++++ b/src/GUI/qml/Settings.qml
+@@ -481,6 +481,73 @@ Item {
+                 }
+             }
+ 
++            Section {
++                id: mgaInputSection
++                title: qsTr("MGA Training / Controllers / Source Build")
++                width: parent.width
++                settingGroup: "mgaTraining"
++                contents: [
++                    Note {
++                        text: qsTr("CONTROLLER SETUP · Saitek Cyborg Evo Force (06a3:ffb5) and Cyborg 3D USB (06a3:0006). The ROCK 5B kernel currently lacks joydev; use Linux Event input. Setup utility: ~/.local/bin/fgfs-mga-controller-setup. Training launcher: ~/.local/bin/fgfs-mga-training balanced. Event profiles: ~/.fgfs/Input/Event/Saitek/. Before flight, inspect mappings, verify pitch/roll/yaw/throttle direction and range with the aircraft parked, and save a known-good profile. Force feedback is intentionally not enabled.")
++                    },
++                    Note {
++                        text: qsTr("QUICK CHECK · In a terminal run: ~/.local/bin/fgfs-mga-controller-setup status. For live input, use the utility's inspect/live-event options. If the setup utility is missing, check ~/.local/bin and the desktop entry under ~/.local/share/applications. Do not change kernel modules or force-feedback settings as part of this launcher configuration.")
++                    },
++                    Rectangle {
++                        id: mgaControllerActions
++                        width: parent.width
++                        height: controllerActionsColumn.implicitHeight + Style.margin * 2
++                        color: Style.panelBackground
++                        border.width: 1
++                        border.color: Style.minorFrameColor
++                        radius: Style.roundRadius
++                        property bool advanced: false
++                        property bool hidden: false
++                        function saveState() {}
++                        function apply() {}
++                        Column {
++                            id: controllerActionsColumn
++                            anchors.left: parent.left
++                            anchors.right: parent.right
++                            anchors.top: parent.top
++                            anchors.margins: Style.margin
++                            spacing: Style.margin
++                            Text {
++                                width: parent.width
++                                text: qsTr("CONTROLLER CONFIGURATION")
++                                color: Style.baseTextColor
++                                font.bold: true
++                                font.pixelSize: Style.subHeadingFontPixelSize
++                            }
++                            Text {
++                                width: parent.width
++                                text: qsTr("Setup command: ~/.local/bin/fgfs-mga-controller-setup status")
++                                color: Style.baseTextColor
++                                wrapMode: Text.WrapAnywhere
++                                font.pixelSize: Style.baseFontPixelSize
++                            }
++                            Row {
++                                width: parent.width
++                                spacing: Style.margin
++                                Button {
++                                    text: qsTr("Open Event profiles")
++                                    onClicked: Qt.openUrlExternally("file:///home/radxa/.fgfs/Input/Event/Saitek/")
++                                }
++                                Button {
++                                    text: qsTr("Open setup utility folder")
++                                    onClicked: Qt.openUrlExternally("file:///home/radxa/.local/bin/")
++                                }
++                            }
++                        }
++                    },
++                    Note {
++                        text: qsTr("Scenery and performance: use V2.0 for broad global coverage on this lower-power board; V3.0 is higher-detail but only available in selected areas. Do not mix another FlightGear version's scenery root into FG_ROOT. The MGA balanced launcher preserves buildings, vegetation and 3D clouds while using modest shader quality and a 60 fps cap. Optional lower-load settings are available in ~/.config/flightgear-rock5b.")
++                    },
++                    Note {
++                        text: qsTr("Source updater: ~/.local/bin/fgfs-mga-update build rebuilds the test binary from the current source; ~/.local/bin/fgfs-mga-update update fetches and fast-forwards clean source trees only, then rebuilds. It never replaces /usr/local/bin/fgfs. Dirty source trees are deliberately not auto-stashed or overwritten.")
++                    }
++                ]
++            }
+             Section {
+                 id: renderSection
+                 title: qsTr("Rendering")
+diff --git a/src/GUI/qml/Sidebar.qml b/src/GUI/qml/Sidebar.qml
+index 052d77ac2..3761e563d 100644
+--- a/src/GUI/qml/Sidebar.qml
++++ b/src/GUI/qml/Sidebar.qml
+@@ -5,7 +5,7 @@ import FlightGear 1.0
+ 
+ Rectangle {
+     id: root
+-    color: Style.themeColor
++    color: Style.backgroundColor
+ 
+     property alias pagesModel: buttonRepeater.model
+     property int selectedPage: 0
+diff --git a/src/GUI/qml/Style.qml b/src/GUI/qml/Style.qml
+index 39cd70e8d..25c1e6259 100644
+--- a/src/GUI/qml/Style.qml
++++ b/src/GUI/qml/Style.qml
+@@ -3,39 +3,40 @@ import QtQml 2.0
+ 
+ QtObject
+ {
++    // MGA Flight Operations visual system: black enamel, antique brass,
++    // warm instrument white and restrained signal red.
+     readonly property int margin: 8
+-    readonly property int roundRadius: 6
++    readonly property int roundRadius: 3
+ 
+     readonly property int inset: 20
+     readonly property int strutSize: 50
+ 
+-    readonly property string frameColor: "#68A6E1"
+-    readonly property string minorFrameColor: "#9f9f9f"
++    readonly property string frameColor: "#B08D57"
++    readonly property string minorFrameColor: "#62543E"
+ 
+-    readonly property string backgroundColor: "#ffffff"
+-    readonly property string themeColor: "#1b7ad3"
+-    readonly property string destructiveActionColor: "#c62703"
+-    readonly property string panelBackground: "#efefef"
++    readonly property string backgroundColor: "#17191A"
++    readonly property string themeColor: "#B08D57"
++    readonly property string destructiveActionColor: "#A6262D"
++    readonly property string panelBackground: "#222526"
+ 
+-    readonly property string activeColor: Qt.darker(themeColor)
+-    readonly property string inverseActiveColor: "#2f2f2f"
++    readonly property string activeColor: "#A6262D"
++    readonly property string inverseActiveColor: "#F0EEE7"
+ 
+-    readonly property string inactiveThemeColor: "#9f9f9f"
++    readonly property string inactiveThemeColor: "#B8B2A6"
+     readonly property string disabledThemeColor: disabledTextColor
+-    readonly property string disabledMinorFrameColor: "#afafaf"
++    readonly property string disabledMinorFrameColor: "#454545"
+ 
+-    readonly property string baseTextColor: "#2f2f2f"
+-    readonly property string themeContrastTextColor: "#efefef"
+-    readonly property string themeContrastLinkColor: baseTextColor
++    readonly property string baseTextColor: "#F0EEE7"
++    readonly property string themeContrastTextColor: "#F0EEE7"
++    readonly property string themeContrastLinkColor: "#D8B77A"
+ 
+     readonly property int baseFontPixelSize: 12
+     readonly property int subHeadingFontPixelSize: 14
+     readonly property int headingFontPixelSize: 18
+ 
+-    readonly property string disabledTextColor: "#6f6f6f"
++    readonly property string disabledTextColor: "#98938A"
+ 
+-    readonly property double panelOpacity: 0.7
++    readonly property double panelOpacity: 0.92
+ 
+     readonly property int menuItemHeight: baseFontPixelSize + (margin * 2)
+ }
+-
+diff --git a/src/GUI/resources.qrc b/src/GUI/resources.qrc
+index f920816c0..270a1a109 100644
+--- a/src/GUI/resources.qrc
++++ b/src/GUI/resources.qrc
+@@ -2,6 +2,7 @@
+     <qresource prefix="/">
+         <file alias="app-icon-large">../../icons/128x128/apps/flightgear.png</file>
+         <file alias="spinner">assets/spinner.gif</file>
++        <file alias="mga-region-map.svg">assets/mga-region-map.svg</file>
+         <file alias="linear-spinner">qml/icons8-linear-spinner.gif</file>
+ 
+         <file alias="heliport-icon">assets/heliport-icon.png</file>
+@@ -59,6 +60,7 @@
+         <file>qml/SettingsDateTimePicker.qml</file>
+         <file>qml/Summary.qml</file>
+         <file>qml/Location.qml</file>
++        <file>qml/Training.qml</file>
+         <file>qml/HistoryPopup.qml</file>
+         <file>qml/AddOns.qml</file>
+         <file>qml/DragToReorderButton.qml</file>
+diff --git a/src/Main/fg_init.cxx b/src/Main/fg_init.cxx
+index 8f745dd6f..2df1e3d00 100755
+--- a/src/Main/fg_init.cxx
++++ b/src/Main/fg_init.cxx
+@@ -85,6 +85,9 @@
+ #include <GUI/new_gui.hxx>
+ #include <GUI/Highlight.hxx>
+ #include <GUI/MessageBox.hxx>
++#if defined(HAVE_QT)
++#include <GUI/QtLauncher.hxx>
++#endif
+ #include <Input/input.hxx>
+ #include <Instrumentation/instrument_mgr.hxx>
+ #include <Model/acmodel.hxx>
+@@ -1541,3 +1544,11 @@ int fgUninstall()
+ #endif
+     return EXIT_SUCCESS;
+ }
++
++void fgExit(int status)
++{
++#if defined(HAVE_QT)
++    flightgear::shutdownQtApp();
++#endif
++    exit(status);
++}
+diff --git a/src/Main/fg_init.hxx b/src/Main/fg_init.hxx
+index 495152366..5de3fb8ad 100644
+--- a/src/Main/fg_init.hxx
++++ b/src/Main/fg_init.hxx
+@@ -97,6 +97,9 @@ void fgInitPackageRoot();
+ // by the real installer).
+ int fgUninstall();
+ 
++// flightgear specific exit(status) function
++void fgExit(int status);
++
+ #endif // _FG_INIT_HXX
+ 
+ 
+diff --git a/src/Main/options.cxx b/src/Main/options.cxx
+index ac890154e..837d976bd 100644
+--- a/src/Main/options.cxx
++++ b/src/Main/options.cxx
+@@ -2687,9 +2687,9 @@ void Options::processArgResult(int result)
+     }
+     devices.clear();
+     smgr.stop();
+-    exit(0);
++    fgExit(0);
+   } else if (result == FG_OPTIONS_EXIT) {
+-    exit(0);
++    fgExit(0);
+   }
+ }
+ 
+diff --git a/src/Sound/fg_fx.cxx b/src/Sound/fg_fx.cxx
+index 0e1d3c2c2..f3f833364 100644
+--- a/src/Sound/fg_fx.cxx
++++ b/src/Sound/fg_fx.cxx
+@@ -170,6 +170,11 @@ FGFX::update (double dt)
+     if (!_active && _smgr->is_active())
+     {
+         _active = true;
++        // Aircraft FX groups can be created after the sound manager has
++        // already activated its registered groups. Activate this group too,
++        // otherwise conditions report sounds as playing but no backend source
++        // is ever created.
++        SGSampleGroup::activate();
+         for (auto s : _xmlSounds) {
+             s->start();
+         }

@@ -1,0 +1,2 @@
+aeonwave: d0e042ffcc4d30df31ff6ef3d9ecd3eeb113f5cb Fix modulation type strings: gain and pitch where switched.
+https://github.com/adalinbv/aax.git

@@ -1,0 +1,343 @@
+diff --git a/simgear/sound/sample_group.cxx b/simgear/sound/sample_group.cxx
+index ab2b4749..3c5fd2a5 100644
+--- a/simgear/sound/sample_group.cxx
++++ b/simgear/sound/sample_group.cxx
+@@ -128,6 +128,7 @@ void SGSampleGroup::update( double dt ) {
+     for (auto current : _samples) {
+         SGSoundSample *sample = current.second;
+ 
++
+         if ( !sample->is_valid_source() && sample->is_playing() && !sample->test_out_of_range()) {
+             start_playing_sample(sample);
+ 
+diff --git a/simgear/sound/soundmgr_aeonwave.cxx b/simgear/sound/soundmgr_aeonwave.cxx
+index 9104f634..dd3575dd 100644
+--- a/simgear/sound/soundmgr_aeonwave.cxx
++++ b/simgear/sound/soundmgr_aeonwave.cxx
+@@ -35,6 +35,7 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <cassert>
++#include <mutex>
+ 
+ #include <aax/aeonwave.hpp>
+ 
+@@ -54,11 +55,10 @@ using source_map = std::map< unsigned int, aax::Emitter >;
+ using buffer_map = std::map< unsigned int, aax::Buffer& >;
+ using sample_group_map = std::map< std::string, SGSharedPtr<SGSampleGroup> >;
+ 
+-#ifndef NDEBUG
+-# define TRY(a)	if ((a) == 0) printf("%i: %s\n", __LINE__, d->_aax.strerror())
+-#else
+-# define TRY(a)	(a)
+-#endif
++#define TRY(a) do { \
++    if (!(a)) SG_LOG(SG_SOUND, SG_ALERT, "AeonWave call failed at line " \
++                      << __LINE__ << ": " << d->_aax.strerror()); \
++} while (0)
+ #define BLOCKSIZE_TO_SMP(a)		((a) > 1) ? (((a)-4)*2) : 1
+ 
+ class SGSoundMgr::SoundManagerPrivate
+@@ -68,6 +68,7 @@ public:
+ 
+     ~SoundManagerPrivate()
+     {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(_sample_groups_mutex);
+         _sample_groups.clear();
+     }
+ 
+@@ -91,7 +92,7 @@ public:
+ 
+     SGVec3d _absolute_pos = SGVec3d::zeros();
+     SGVec3d _base_pos = SGVec3d::zeros();
+-    SGQuatd _orientation = SGQuatd::zeros();
++    SGQuatd _orientation = SGQuatd::unit();
+ 
+     float _sound_velocity = SPEED_OF_SOUND;
+ 
+@@ -115,6 +116,7 @@ public:
+         return nullEmitter;
+     }
+ 
++    std::recursive_mutex _sample_groups_mutex;
+     sample_group_map _sample_groups;
+ };
+ 
+@@ -158,7 +160,6 @@ void SGSoundMgr::init()
+     }
+     else
+     {
+-        testForError(d->_aax, "Audio device not available, trying default.");
+         d->_aax = aax::AeonWave(AAX_MODE_WRITE_STEREO);
+         if (testForError(d->_aax, "Default audio device not available.") ) {
+            return;
+@@ -169,12 +170,19 @@ void SGSoundMgr::init()
+ 
+     if ( is_working() )
+     {
++        // The AeonWave C++ wrapper probes DSP handles while constructing the
++        // mixer, before the mixer is initialized. Those optional probes can
++        // leave a stale global error; only report errors from initialization
++        // itself.
++        (void)aax::error_no();
+         TRY( d->_aax.set(AAX_INITIALIZED) );
+         TRY( d->_aax.set(AAX_PLAYING) );
+         testForError("initialization");
+ 
+         aax::dsp dsp = aax::dsp(d->_aax, AAX_VOLUME_FILTER);
+-        TRY( dsp.set(AAX_GAIN, 0.0f) );
++        // AAX_GAIN is linear: zero mutes the entire mixer. Unity gain keeps
++        // FlightGear's per-sample volume and distance models audible.
++        TRY( dsp.set(AAX_GAIN, 1.0f) );
+         TRY( d->_aax.set(dsp) );
+ 
+         dsp = aax::dsp(d->_aax, AAX_DISTANCE_FILTER);
+@@ -214,6 +222,7 @@ void SGSoundMgr::activate()
+ {
+ #ifdef ENABLE_SOUND
+     if ( is_working() ) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         _active = true;
+                 
+         for ( auto current : d->_sample_groups ) {
+@@ -227,6 +236,7 @@ void SGSoundMgr::activate()
+ void SGSoundMgr::stop()
+ {
+ #ifdef ENABLE_SOUND
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+     // first stop all sample groups
+     for ( auto current : d->_sample_groups ) {
+         current.second->stop();
+@@ -252,6 +262,7 @@ void SGSoundMgr::suspend()
+ {
+ #ifdef ENABLE_SOUND
+     if (is_working()) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         for (auto current : d->_sample_groups ) {
+             current.second->stop();
+         }
+@@ -264,6 +275,7 @@ void SGSoundMgr::resume()
+ {
+ #ifdef ENABLE_SOUND
+     if (is_working()) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         for ( auto current : d->_sample_groups ) {
+             current.second->resume();
+         }
+@@ -277,6 +289,7 @@ void SGSoundMgr::update( double dt )
+ {
+ #ifdef ENABLE_SOUND
+     if ( is_working() && _active ) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         if (_changed) {
+             d->update_pos_and_orientation();
+         }
+@@ -285,14 +298,19 @@ void SGSoundMgr::update( double dt )
+             current.second->update(dt);
+         }
+ 
++        // AeonWave requires an explicit mixer update to advance emitters and
++        // submit their mixed PCM to the output device. Without this call,
++        // FlightGear reports samples as playing but the sink receives silence.
++        TRY( d->_aax.set(AAX_UPDATE) );
++
+         if (_changed) {
+             aax::dsp dsp = d->_aax.get(AAX_VOLUME_FILTER);
+-            TRY( dsp.set(AAX_GAIN, _volume) );
++            const float mixer_volume = (_volume > 0.0f) ? _volume : 1.0f;
++            TRY( dsp.set(AAX_GAIN, mixer_volume) );
+             TRY( d->_aax.set(dsp) );
+ 
+-            aax::Matrix64 mtx = d->_mtx;
+-            mtx.inverse();
+-            TRY( d->_aax.sensor_matrix(mtx) );
++            aax::Matrix64 listener;
++            TRY( d->_aax.sensor_matrix(listener) );
+ 
+             SGQuatd hlOr = SGQuatd::fromLonLat( _geod_pos );
+             SGVec3d velocity = SGVec3d::zeros();
+@@ -320,6 +338,8 @@ void SGSoundMgr::update( double dt )
+ // add a sample group, return true if successful
+ bool SGSoundMgr::add( SGSampleGroup *sgrp, const std::string& refname )
+ {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     if ( sample_grp_it != d->_sample_groups.end() ) {
+         // sample group already exists
+@@ -336,6 +356,8 @@ bool SGSoundMgr::add( SGSampleGroup *sgrp, const std::string& refname )
+ // remove a sound effect, return true if successful
+ bool SGSoundMgr::remove( const std::string &refname )
+ {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     if ( sample_grp_it == d->_sample_groups.end() ) {
+         // sample group was not found.
+@@ -350,6 +372,8 @@ bool SGSoundMgr::remove( const std::string &refname )
+ 
+ // return true of the specified sound exists in the sound manager system
+ bool SGSoundMgr::exists( const std::string &refname ) {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     return ( sample_grp_it != d->_sample_groups.end() );
+ }
+@@ -358,12 +382,13 @@ bool SGSoundMgr::exists( const std::string &refname ) {
+ // return a pointer to the SGSampleGroup if the specified sound exists
+ // in the sound manager system, otherwise return nullptr
+ SGSampleGroup *SGSoundMgr::find( const std::string &refname, bool create ) {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     if ( sample_grp_it == d->_sample_groups.end() ) {
+         // sample group was not found.
+         if (create) {
+             SGSampleGroup *sgrp = new SGSampleGroup(this, refname);
+-            add( sgrp, refname );
+             return sgrp;
+         }
+         else 
+@@ -385,7 +410,13 @@ void SGSoundMgr::set_volume( float v )
+ unsigned int SGSoundMgr::request_source()
+ {
+     unsigned int id = d->_source_id++;
+-    d->_sources.insert( std::make_pair(id, aax::Emitter(AAX_ABSOLUTE)) );
++    // Construct the emitter directly in the map.  The AeonWave C++ wrapper's
++    // default move leaves the source handle owned by the moved-from temporary;
++    // inserting a temporary therefore lets its destructor invalidate the
++    // emitter that FlightGear kept in the map.
++    d->_sources.emplace(std::piecewise_construct,
++                        std::forward_as_tuple(id),
++                        std::forward_as_tuple(AAX_ABSOLUTE));
+     return id;
+ }
+ 
+@@ -462,7 +493,7 @@ unsigned int  SGSoundMgr::request_buffer(SGSoundSample *sample)
+ 
+         sample->set_buffer(bufid);
+         sample->set_block_align( buf.get(AAX_BLOCK_ALIGNMENT) );
+-        sample->set_frequency( buf.get(AAX_FREQUENCY) );
++        sample->set_frequency( buf.get(AAX_SAMPLE_RATE) );
+         sample->set_no_samples( buf.get(AAX_NO_SAMPLES) );
+         sample->set_no_tracks( buf.get(AAX_TRACKS) );
+ 
+@@ -654,9 +685,9 @@ void SGSoundMgr::update_sample_config( SGSoundSample *sample, SGVec3d& position,
+ }
+ 
+ 
+-vector<std::string> SGSoundMgr::get_available_devices()
++std::vector<std::string> SGSoundMgr::get_available_devices()
+ {
+-    vector<std::string> devices;
++    std::vector<std::string> devices;
+ #ifdef ENABLE_SOUND
+     std::string on = " on ";
+     std::string colon = ": ";
+diff --git a/simgear/sound/soundmgr_openal.cxx b/simgear/sound/soundmgr_openal.cxx
+index dcb4524a..57b075ac 100644
+--- a/simgear/sound/soundmgr_openal.cxx
++++ b/simgear/sound/soundmgr_openal.cxx
+@@ -1,3 +1,4 @@
++#include <mutex>
+ // soundmgr_openal.cxx -- Sound effect management class for OpenAL
+ //
+ // Sound manager initially written by David Findlay
+@@ -150,6 +151,7 @@ public:
+     bool _bad_doppler = false;
+     bool _source_radius = false;
+     
++    std::recursive_mutex _sample_groups_mutex;
+     sample_group_map _sample_groups;
+     buffer_map _buffers;
+ };
+@@ -171,6 +173,7 @@ SGSoundMgr::~SGSoundMgr() {
+ 
+     if (is_working())
+         stop();
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+     d->_sample_groups.clear();
+ }
+ 
+@@ -303,6 +306,7 @@ void SGSoundMgr::activate()
+ {
+ #ifdef ENABLE_SOUND
+     if ( is_working() ) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         _active = true;
+                 
+         for ( auto current : d->_sample_groups ) {
+@@ -316,6 +320,7 @@ void SGSoundMgr::activate()
+ void SGSoundMgr::stop()
+ {
+ #ifdef ENABLE_SOUND
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+     // first stop all sample groups
+     for ( auto current : d->_sample_groups ) {
+         current.second->stop();
+@@ -356,6 +361,7 @@ void SGSoundMgr::suspend()
+ {
+ #ifdef ENABLE_SOUND
+     if (is_working()) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         for ( auto current : d->_sample_groups ) {
+             current.second->suspend();
+         }
+@@ -368,6 +374,7 @@ void SGSoundMgr::resume()
+ {
+ #ifdef ENABLE_SOUND
+     if (is_working()) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         for ( auto current : d->_sample_groups ) {
+             current.second->resume();
+         }
+@@ -381,6 +388,7 @@ void SGSoundMgr::update( double dt )
+ {
+ #ifdef ENABLE_SOUND
+     if (_active) {
++        std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
+         alcSuspendContext(d->_context);
+ 
+         if (_changed) {
+@@ -431,6 +439,8 @@ if (isNaN(toVec3f(_velocity).data())) printf("NaN in listener velocity\n");
+ // add a sample group, return true if successful
+ bool SGSoundMgr::add( SGSampleGroup *sgrp, const std::string& refname )
+ {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     if ( sample_grp_it != d->_sample_groups.end() ) {
+         // sample group already exists
+@@ -448,6 +458,8 @@ bool SGSoundMgr::add( SGSampleGroup *sgrp, const std::string& refname )
+ // remove a sound effect, return true if successful
+ bool SGSoundMgr::remove( const std::string &refname )
+ {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     if ( sample_grp_it == d->_sample_groups.end() ) {
+         // sample group was not found.
+@@ -462,6 +474,8 @@ bool SGSoundMgr::remove( const std::string &refname )
+ 
+ // return true of the specified sound exists in the sound manager system
+ bool SGSoundMgr::exists( const std::string &refname ) {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     return ( sample_grp_it != d->_sample_groups.end() );
+ }
+@@ -470,12 +484,13 @@ bool SGSoundMgr::exists( const std::string &refname ) {
+ // return a pointer to the SGSampleGroup if the specified sound exists
+ // in the sound manager system, otherwise return nullptr
+ SGSampleGroup *SGSoundMgr::find( const std::string &refname, bool create ) {
++    std::lock_guard<std::recursive_mutex> sample_groups_lock(d->_sample_groups_mutex);
++
+     auto sample_grp_it = d->_sample_groups.find( refname );
+     if ( sample_grp_it == d->_sample_groups.end() ) {
+         // sample group was not found.
+         if (create) {
+             SGSampleGroup* sgrp = new SGSampleGroup(this, refname);
+-            add( sgrp, refname );
+             return sgrp;
+         }
+         else 
