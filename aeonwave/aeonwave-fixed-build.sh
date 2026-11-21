@@ -12,7 +12,6 @@ python3 aeonwave-wavlist-fix.py aeonwave-fixed
 python3 aeonwave-wavlist-fix2.py aeonwave-fixed
 python3 aeonwave-wavlist-fix3.py aeonwave-fixed
 python3 aeonwave-meta-fix.py aeonwave-fixed
-python3 aeonwave-voicerate-fix.py aeonwave-fixed
 cd aeonwave-fixed
 nice -n 19 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/builds/aeonwave-fixed-prefix \
   -DXML_INCLUDE_DIR=$HOME/builds/aeonwave-prefix/include -DXML_LIBRARY=$HOME/builds/aeonwave-prefix/lib64/libzeroxml.a
