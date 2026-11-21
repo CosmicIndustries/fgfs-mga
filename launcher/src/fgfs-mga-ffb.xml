@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- fgfs-mga force feedback: what FlightGear sends to fgfs-mga-ffb (fgfs-mga adds
+     generic=socket,out,30,127.0.0.1,5630,udp,fgfs-mga-ffb when FFB=1 or with ffb on the command line).
+     The field order must match FIELDS in fgfs-mga-ffb. -->
+<PropertyList>
+ <generic>
+  <output>
+   <line_separator>newline</line_separator>
+   <var_separator>,</var_separator>
+   <chunk><name>ias</name><type>float</type><format>%.1f</format><node>/velocities/airspeed-kt</node></chunk>
+   <chunk><name>gs</name><type>float</type><format>%.1f</format><node>/velocities/groundspeed-kt</node></chunk>
+   <chunk><name>alpha</name><type>float</type><format>%.2f</format><node>/orientation/alpha-deg</node></chunk>
+   <chunk><name>stall</name><type>bool</type><format>%d</format><node>/sim/alarms/stall-warning</node></chunk>
+   <chunk><name>wow0</name><type>bool</type><format>%d</format><node>/gear/gear[0]/wow</node></chunk>
+   <chunk><name>wow1</name><type>bool</type><format>%d</format><node>/gear/gear[1]/wow</node></chunk>
+   <chunk><name>wow2</name><type>bool</type><format>%d</format><node>/gear/gear[2]/wow</node></chunk>
+   <chunk><name>trim</name><type>float</type><format>%.3f</format><node>/controls/flight/elevator-trim</node></chunk>
+   <chunk><name>frozen</name><type>bool</type><format>%d</format><node>/sim/freeze/master</node></chunk>
+  </output>
+ </generic>
+</PropertyList>

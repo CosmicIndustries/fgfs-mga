@@ -1,0 +1,760 @@
+#!/usr/bin/env bash
+# fgfs-mga: one launcher for FlightGear MGA training on the ROCK 5B+.
+# Old names (fgfs-mga-training, fgfs-mga-training-aeonwave, fgfs-mga-fleet, fg-rock5b,
+# flightgear-edited-openal and the MGA tools) still work and call this.
+#
+# Usage:
+#   fgfs-mga [AIRCRAFT] [PRESET] [options] [-- extra fgfs args]
+#   fgfs-mga list                  aircraft, presets, builds and tools, and what's installed
+#   fgfs-mga audit                 read-only scan for every FlightGear launcher on this machine
+#   fgfs-mga raw [options] -- ARGS fgfs + add-ons + ARGS, nothing else
+#   fgfs-mga legacy [aeonwave] ... run your original training launcher from the backup
+# Tools (your own scripts, kept as they were):
+#   fgfs-mga gui [low|balanced|visual]  FlightGear's own launcher window (was fg-rock5b)
+#   fgfs-mga openal                 edited OpenAL build (was flightgear-edited-openal)
+#   fgfs-mga controller             controller setup (was fgfs-mga-controller-setup)
+#   fgfs-mga joystick-test          (was fgfs-mga-joystick-test)
+#   fgfs-mga event-input            (was fgfs-mga-training-event-input)
+#   fgfs-mga update [build]         rebuild FlightGear from source (was fgfs-mga-update)
+#   fgfs-mga scenery-audit          (was fgfs-mga-scenery-fleet-audit)
+#   fgfs-mga aeonwave-test          (was aeonwave-output-test)
+#   fgfs-mga controls [gui|wizard|check|scan|test|show|defaults|bind JOB]  stick setup, sensitivity, curves
+#   fgfs-mga ffb [test|show]        force feedback bridge for the Evo Force (strengths: controls gui)
+#
+# Words can come in any order:  fgfs-mga seminole fast   =   fgfs-mga fast seminole
+#
+# Aircraft: warrior archer arrow seminole cabri r22 r44 citabria decathlon zlin
+#           c182 c182rg pa18 c337 dromader agcat an2   (or any aircraft id, e.g. c172p)
+# Presets:  fast balanced training high   (default: balanced)
+#           also accepted: low performance medium visual quality ultra lesson
+#
+# Options:
+#   -a, --aircraft NAME     same as the AIRCRAFT word
+#   -p, --preset NAME       same as the PRESET word
+#       --airport ICAO      start airport (default KEZM, Heart of Georgia Regional, Eastman)
+#       --runway RWY        start runway, e.g. 20
+#       --build NAME        source (default) | aeonwave | system (/usr/local/bin/fgfs)
+#       --aeonwave          same as --build aeonwave
+#       --no-tune           leave the radios where the aircraft starts them (default: COM_TUNE setting)
+#       --new / --old       FlightGear 2024.1.7 build / the older 2024.1.1 build (default: NEW_BUILD setting)
+#       --no-addons         don't load the add-ons
+#       --addons "A B"      load only these add-ons (folder names or full paths)
+#       --input MODE        event (default: Saitek sticks on this kernel) | joystick | both | off
+#       --no-photoscenery   don't turn on the photoscenery overlay
+#       --no-terrasync      don't download scenery
+#       --telemetry         send telemetry out on UDP 5620 (fg_telemetry_out protocol)
+#       --weather-in        take weather in on UDP 5610 (fg_weather_in protocol)
+#       --fullscreen        start full screen
+#       --window WxH        window size, e.g. 1920x1080
+#       --fps               show the frame-rate counter
+#       --ffb / --no-ffb    force feedback on the Evo Force on/off for this flight (default: FFB setting)
+#   -n, --dry-run           print the command and stop
+#   -h, --help              this help
+# Any other --option is passed straight to fgfs.
+#
+# Settings live in ~/.config/fgfs-mga/config (paths, defaults, EXTRA_ARGS).
+
+VERSION="1.2.0"
+CONF="${FGFS_MGA_CONF:-$HOME/.config/fgfs-mga/config}"
+SHARE="${FGFS_MGA_SHARE:-$HOME/.local/share/fgfs-mga}"
+
+# ---------- defaults (override any of these in the config file) ----------
+FG_HOME_DIR="$HOME/.fgfs"
+FG_ROOT_DIR="$HOME/.fgfs/fgdata_2024_1"
+FG_SCENERY_DIRS=""                  # empty = Scenery-Addons (photoscenery, if there):TerraSync:fgdata/Scenery
+AIRCRAFT_DIRS="$HOME/.fgfs/Aircraft"
+FGFS_BIN="$HOME/builds/flightgear/build/src/Main/fgfs"
+FGFS_BIN_AEONWAVE=""                # empty = first that exists of the AeonWave builds below
+FGFS_BIN_SYSTEM="/usr/local/bin/fgfs"
+NEW_BUILD=1                         # 1 = FlightGear 2024.1.7 builds below, 0 = the older 2024.1.1 build (--new / --old per flight)
+FGFS_BIN_NEW="$HOME/builds/flightgear-2024.1.7/build/src/Main/fgfs"
+FGFS_BIN_AEONWAVE_NEW="$HOME/builds/flightgear-2024.1.7/build-aeonwave/src/Main/fgfs"
+AEONWAVE_BINS="$HOME/builds/flightgear-aeonwave-prefix/bin/fgfs $HOME/builds/flightgear/build-aeonwave/src/Main/fgfs $HOME/builds/flightgear/build-aeonwave-3124/src/Main/fgfs"
+AEONWAVE_LIBS="$HOME/builds/aeonwave-fixed-prefix/lib/aarch64-linux-gnu $HOME/builds/aeonwave-prefix/lib/aarch64-linux-gnu $HOME/builds/flightgear-aeonwave-prefix/lib $HOME/builds/aeonwave-prefix/lib $HOME/builds/aeonwave-3.12.4-prefix/lib"
+AEONWAVE_DEVICE="PulseAudio on default"
+AEONWAVE_LATENCY="1024/48000"      # PIPEWIRE_LATENCY for the AeonWave build
+AEONWAVE_NO_SIMD=0                  # 1 = AAX_NO_SIMD_SUPPORT (AeonWave without NEON). Not needed with the fixed
+                                    # library above (aeonwave-fixed-prefix: its NEON mixer muted 3D sounds and its
+                                    # WAV reader crashed on tagged files; both fixed). 0 = NEON on
+AUDIO_QUANTUM=1024                  # PipeWire buffer (frames at 48 kHz) while fgfs plays; the desktop's 256 gave
+                                    # several underruns a second under FlightGear's load. 0 = leave it alone
+AUDIO_SINK="auto"                   # auto = skip a virtual-surround effect sink and play straight to the output it
+                                    # feeds; "" = system default; or a sink name from `pactl list short sinks`
+OPENAL_DEVICE=""                    # source/system builds: sound device, empty = system default
+ADDON_ROOT=""                       # old setting; if set, the only add-on folder searched
+ADDON_DIRS=""                       # empty = $FG_HOME_DIR/Addons $FG_ROOT_DIR/Addons $FG_HOME_DIR/FlightGear-2024.1-Addons-MGA
+# Searched in that order, so Logbook finds Logbook-v2.1.0 before the older 1.5.1 copy.
+ADDONS="Logbook ATCChatter SpokenATC SpokenGCA PAR RedGriffinATC landing_rate which-runway"
+INPUT_MODE="event"                  # event | joystick | both | off (this kernel has no joydev, so event)
+AUDIO_FIX=1                         # unmute the board's ES8316 codec and the fgfs stream once sound starts
+PHOTOSCENERY=1                      # turn on the photoscenery overlay when Scenery-Addons/Orthophotos exists
+DEVELOPER=0                         # 1 = FlightGear developer mode (shows developer alerts, e.g. one
+                                    #     "texture size not a power-of-two" line per GUI image)
+FFB="auto"                          # force feedback bridge: auto = on when the Evo Force has its force-feedback
+                                    #   driver loaded, 1 = always, 0 = never (strengths: fgfs-mga controls gui)
+CONTROLS_CHECK=1                    # before each flight: warn if a stick is unplugged or a core control (roll,
+                                    #   pitch, rudder, throttle, brakes) isn't bound; from the menu it's a window
+COM_TUNE=1                          # tune COM1 to the start airport's tower (or CTAF/UNICOM) and COM2 to its
+                                    #   approach (or departure, ATIS/AWOS), from apt.dat. Red Griffin ATC only
+                                    #   finds a radio that is tuned to a station; the PA28 starts on 118.70/119.40
+DEFAULT_AIRCRAFT="warrior"
+DEFAULT_PRESET="balanced"
+DEFAULT_AIRPORT="KEZM"
+DEFAULT_BUILD="source"
+TERRASYNC=1
+TRAINING_METAR="KEZM 011200Z 00000KT 10SM CLR 20/10 A3000"
+EXTRA_ARGS=()
+
+# shellcheck source=/dev/null
+[[ -f "$CONF" ]] && . "$CONF"
+[[ -n "${DEFAULT_AUDIO:-}" ]] && DEFAULT_BUILD="$DEFAULT_AUDIO"   # older config name
+if [[ -n "$ADDON_ROOT" ]]; then ADDON_DIRS="$ADDON_ROOT"
+elif [[ -z "$ADDON_DIRS" ]]; then ADDON_DIRS="$FG_HOME_DIR/Addons $FG_ROOT_DIR/Addons $FG_HOME_DIR/FlightGear-2024.1-Addons-MGA"; fi
+if [[ -z "$FG_SCENERY_DIRS" ]]; then
+  FG_SCENERY_DIRS="$FG_HOME_DIR/TerraSync:$FG_ROOT_DIR/Scenery"
+  [[ -d "$FG_HOME_DIR/Scenery-Addons" ]] && FG_SCENERY_DIRS="$FG_HOME_DIR/Scenery-Addons:$FG_SCENERY_DIRS"
+fi
+
+PRESETS="fast balanced training high"
+FLEET_NAMES="warrior archer arrow seminole cabri r22 r44 citabria decathlon zlin c182 c182rg pa18 c337 dromader agcat an2"
+
+say()  { printf '%s\n' "$*"; }
+warn() { printf 'fgfs-mga: %s\n' "$*" >&2; }
+die()  { printf 'fgfs-mga: %s\n' "$*" >&2; exit 1; }
+usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# Short name -> "folder id". Same table the old fgfs-mga-fleet used.
+fleet_map() {
+  case "$1" in
+    warrior)                 echo "PA28 PA28-161-160" ;;
+    archer|arrow)            echo "PA28 PA28-161-180" ;;
+    seminole|seneca)         echo "SenecaII SenecaII" ;;
+    cabri|r22)               echo "R22 R22" ;;
+    r44)                     echo "R44 raven" ;;
+    citabria|decathlon|zlin) echo "Zlin-50lx z50lx" ;;
+    c182)                    echo "c182s c182s" ;;
+    c182rg)                  echo "c182rg c182rg" ;;
+    pa18|supercub)           echo "Piper-PA-18 Piper-PA-18" ;;
+    c337|skymaster)          echo "Cessna337 Cessna337" ;;
+    dromader)                echo "Dromader Dromader" ;;
+    agcat|g164)              echo "G-164 G-164" ;;
+    an2)                     echo "an2 an2" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Other names old launchers may have used for the same presets.
+preset_alias() {
+  case "$1" in
+    low|perf|performance) echo fast ;;
+    medium|normal|default) echo balanced ;;
+    lesson|lessons) echo training ;;
+    quality|ultra|max|visual) echo high ;;
+    *) echo "$1" ;;
+  esac
+}
+is_preset() { case " $PRESETS " in *" $(preset_alias "$1") "*) return 0 ;; esac; return 1; }
+
+# Every folder that may hold aircraft, one per line.
+aircraft_roots() {
+  local IFS=:
+  local d
+  for d in $AIRCRAFT_DIRS; do [[ -d "$d" ]] && printf '%s\n' "$d"; done
+  [[ -d "$FG_ROOT_DIR/Aircraft" ]] && printf '%s\n' "$FG_ROOT_DIR/Aircraft"
+}
+
+# Sets AC_DIR and AC_ID for a short name or a raw aircraft id. Returns 1 if not found.
+resolve_aircraft() {
+  local want="$1" map folder id root f
+  AC_DIR=""; AC_ID=""
+  if map="$(fleet_map "$want")"; then
+    folder="${map% *}"; id="${map#* }"
+    while IFS= read -r root; do
+      if [[ -d "$root/$folder" ]]; then
+        AC_DIR="$root/$folder"
+        if [[ -f "$AC_DIR/$id-set.xml" ]]; then
+          AC_ID="$id"
+        else
+          f="$(find "$AC_DIR" -maxdepth 1 -name '*-set.xml' -print 2>/dev/null | sort | head -n 1)"
+          [[ -n "$f" ]] || return 1
+          f="${f##*/}"; AC_ID="${f%-set.xml}"
+        fi
+        return 0
+      fi
+    done < <(aircraft_roots)
+    return 1
+  fi
+  # Not a short name: treat it as an aircraft id (the part before -set.xml).
+  while IFS= read -r root; do
+    f="$(find "$root" -maxdepth 2 -name "$want-set.xml" -print -quit 2>/dev/null)"
+    if [[ -n "$f" ]]; then AC_DIR="$(dirname "$f")"; AC_ID="$want"; return 0; fi
+  done < <(aircraft_roots)
+  # Or a folder name (e.g. R44): use its first -set.xml.
+  while IFS= read -r root; do
+    if [[ -d "$root/$want" ]]; then
+      f="$(find "$root/$want" -maxdepth 1 -name '*-set.xml' -print 2>/dev/null | sort | head -n 1)"
+      [[ -n "$f" ]] || continue
+      AC_DIR="$root/$want"; f="${f##*/}"; AC_ID="${f%-set.xml}"; return 0
+    fi
+  done < <(aircraft_roots)
+  return 1
+}
+
+# ---------- add-ons ----------
+# The add-on's id from addon-metadata.xml (two add-ons with one id crash FlightGear).
+addon_id() {
+  grep -m1 -o '<identifier[^>]*>[^<]*' "$1/addon-metadata.xml" 2>/dev/null | sed 's/.*>//; s/^ *//; s/ *$//'
+}
+# Name (or full path) -> add-on folder. Exact folder name first, then e.g. Logbook-v2.1.0.
+find_addon() {
+  local n="$1" d c m
+  if [[ "$n" == /* ]]; then [[ -f "$n/addon-metadata.xml" ]] && { printf '%s' "$n"; return 0; }; return 1; fi
+  for d in $ADDON_DIRS; do
+    for c in "$d/$n" "$d/$n"-*; do
+      [[ -d "$c" ]] || continue
+      [[ -f "$c/addon-metadata.xml" ]] && { printf '%s' "$c"; return 0; }
+      m="$(find "$c" -maxdepth 3 -name addon-metadata.xml -print -quit 2>/dev/null)"
+      [[ -n "$m" ]] && { printf '%s' "${m%/*}"; return 0; }
+    done
+  done
+  return 1
+}
+# Ids of the add-ons FlightGear's own launcher window already loads (its Add-ons page).
+launcher_addon_ids() {
+  local ini p
+  ini="$(find "$FG_HOME_DIR/FlightGear" -maxdepth 1 -name 'FlightGear_*.ini' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)"
+  [[ -f "$ini" ]] || return 0
+  awk '/^\[/ { s = ($0 == "[addon-modules]") }
+       s && /\\enable=/ { split($0, a, /[\\=]/); en[a[1]] = $0 ~ /=true$/ }
+       s && /\\path=/   { split($0, a, /[\\=]/); p = $0; sub(/^[^=]*=/, "", p); path[a[1]] = p }
+       END { for (k in path) if (!(k in en) || en[k]) print path[k] }' "$ini" |
+    while IFS= read -r p; do addon_id "$p"; done
+}
+ADDON_ARGS=()
+collect_addons() {   # list, 1 = FlightGear's launcher window is opening
+  local list="$1" name dir id seen=" "
+  ADDON_ARGS=()
+  [[ "${2:-0}" == 1 ]] && seen=" $(launcher_addon_ids | tr '\n' ' ') "
+  for name in $list; do
+    if ! dir="$(find_addon "$name")"; then warn "skipping add-on $name (not found in: $ADDON_DIRS)"; continue; fi
+    id="$(addon_id "$dir")"; [[ -n "$id" ]] || id="$dir"
+    case "$seen" in *" $id "*) continue ;; esac      # already loaded once
+    seen+="$id "
+    ADDON_ARGS+=("--addon=$dir")
+  done
+}
+
+pick_binary() {
+  local b lib extra=""
+  if [[ "$NEW_BUILD" == 1 ]]; then   # 2024.1.7; the older build stays the fallback while a new one is missing
+    if [[ "$1" == aeonwave ]]; then
+      if [[ -x "$FGFS_BIN_AEONWAVE_NEW" ]]; then FGFS_BIN_AEONWAVE="$FGFS_BIN_AEONWAVE_NEW"
+      else warn "no 2024.1.7 AeonWave build at $FGFS_BIN_AEONWAVE_NEW; using the older one"; fi
+    elif [[ "$1" == source || "$1" == default ]]; then
+      if [[ -x "$FGFS_BIN_NEW" ]]; then FGFS_BIN="$FGFS_BIN_NEW"
+      else warn "no 2024.1.7 build at $FGFS_BIN_NEW; using the older one"; fi
+    fi
+  fi
+  case "$1" in
+    source|default) BIN="$FGFS_BIN" ;;
+    system) BIN="$FGFS_BIN_SYSTEM" ;;
+    aeonwave)
+      BIN="$FGFS_BIN_AEONWAVE"
+      if [[ -z "$BIN" ]]; then
+        for b in $AEONWAVE_BINS; do [[ -x "$b" ]] && { BIN="$b"; break; }; done
+        [[ -n "$BIN" ]] || BIN="${AEONWAVE_BINS%% *}"
+      fi
+      for lib in $AEONWAVE_LIBS; do [[ -d "$lib" ]] && extra="${extra:+$extra:}$lib"; done
+      [[ -n "$extra" ]] && export LD_LIBRARY_PATH="$extra${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+      [[ -n "$AEONWAVE_LATENCY" ]] && export PIPEWIRE_LATENCY="$AEONWAVE_LATENCY"
+      [[ "$AEONWAVE_NO_SIMD" == 1 ]] && export AAX_NO_SIMD_SUPPORT=1
+      ;;
+    *) die "unknown build '$1' (use source, aeonwave or system)" ;;
+  esac
+  if [[ ! -x "$BIN" ]]; then
+    if (( DRY )); then warn "fgfs not found or not executable: $BIN"
+    else die "fgfs not found or not executable: $BIN (fix the path in $CONF)"; fi
+  fi
+}
+
+# Your own FlightGear tools: subcommand -> original file name.
+TOOL_NAMES="gui openal controller controls ffb joystick-test event-input update scenery-audit aeonwave-test"
+tool_file() {
+  case "$1" in
+    gui)           echo fg-rock5b ;;
+    openal)        echo flightgear-edited-openal ;;
+    controller)    echo fgfs-mga-controller-setup ;;
+    controls)      echo fgfs-mga-controls ;;
+    ffb)           echo fgfs-mga-ffb ;;
+    joystick-test) echo fgfs-mga-joystick-test ;;
+    event-input)   echo fgfs-mga-training-event-input ;;
+    update)        echo fgfs-mga-update ;;
+    scenery-audit) echo fgfs-mga-scenery-fleet-audit ;;
+    aeonwave-test) echo aeonwave-output-test ;;
+    *) return 1 ;;
+  esac
+}
+# Where a tool lives: the copy the installer kept, or the original if not installed yet.
+tool_path() {
+  local n f
+  n="$(tool_file "$1")" || return 1
+  for f in "$SHARE/tools/$n" "$HOME/.local/bin/$n"; do
+    [[ -f "$f" ]] && ! grep -q 'fgfs-mga shim' "$f" 2>/dev/null && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+run_tool() {
+  local sub="$1" f; shift
+  if f="$(tool_path "$sub")"; then
+    (( DRY )) && { say "would run: $f $*"; exit 0; }
+    # the tools read these; give them the same paths the sim uses
+    export FG_HOME="$FG_HOME_DIR" FG_ROOT="$FG_ROOT_DIR" FG_SCENERY="$FG_SCENERY_DIRS"
+    [[ -x "$f" ]] && exec "$f" "$@"
+    exec bash "$f" "$@"
+  fi
+  if [[ "$sub" == gui ]]; then          # no fg-rock5b: open FlightGear's own launcher
+    DRY=${DRY:-0}; pick_binary system; export FG_HOME="$FG_HOME_DIR"
+    exec "$BIN" --launcher "$@"
+  fi
+  die "the $sub tool ($(tool_file "$sub")) isn't on this machine"
+}
+
+preset_args() {
+  case "$(preset_alias "$1")" in
+    fast)
+      PRESET_ARGS=(--prop:/sim/rendering/shaders/quality-level=0
+        --prop:/sim/rendering/shadows/enabled=false
+        --prop:/sim/rendering/multi-sample-buffers=false
+        --disable-random-objects --disable-random-vegetation --disable-random-buildings
+        --disable-ai-traffic --fog-fastest --visibility=10000) ;;
+    balanced)
+      PRESET_ARGS=(--prop:/sim/rendering/shaders/quality-level=2
+        --prop:/sim/rendering/shadows/enabled=false
+        --enable-random-objects --disable-random-vegetation --disable-random-buildings
+        --disable-ai-traffic --fog-fastest --visibility=20000) ;;
+    training)
+      # balanced, plus the same calm noon VFR weather every time so lessons repeat
+      preset_args balanced
+      PRESET_ARGS+=(--disable-real-weather-fetch --timeofday=noon "--metar=$TRAINING_METAR") ;;
+    high)
+      PRESET_ARGS=(--prop:/sim/rendering/shaders/quality-level=4
+        --enable-random-objects --enable-random-vegetation --enable-random-buildings
+        --enable-ai-traffic --fog-nicest --visibility=40000) ;;
+    *) die "unknown preset '$1' (use: $PRESETS)" ;;
+  esac
+}
+
+print_cmd() {
+  local a
+  say "FG_HOME=$FG_HOME_DIR"
+  [[ -n "${LD_LIBRARY_PATH:-}" ]] && say "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+  [[ -n "${PIPEWIRE_LATENCY:-}" ]] && say "PIPEWIRE_LATENCY=$PIPEWIRE_LATENCY"
+  [[ -n "${AAX_NO_SIMD_SUPPORT:-}" ]] && say "AAX_NO_SIMD_SUPPORT=$AAX_NO_SIMD_SUPPORT"
+  [[ -n "${PULSE_SINK:-}" ]] && say "PULSE_SINK=$PULSE_SINK"
+  [[ -n "${PULSE_PROP:-}" ]] && say "PULSE_PROP=$PULSE_PROP"
+  printf '%q' "$BIN"
+  for a in "$@"; do printf ' \\\n  %q' "$a"; done
+  printf '\n'
+}
+
+# Flight-control input. FlightGear reads Linux "event" devices with the configs in
+# ~/.fgfs/Input/Event (fgfs-mga controls writes them). Plain joystick input needs joydev,
+# which this kernel lacks; running both on one stick would double every input.
+input_args() {
+  case "$1" in
+    event)    INPUT_ARGS=(--prop:bool:/sim/input/no-event-input=false --prop:bool:/sim/input/no-joystick-input=true --prop:bool:/sim/input/no-hid-input=true) ;;
+    joystick) INPUT_ARGS=(--prop:bool:/sim/input/no-event-input=true --prop:bool:/sim/input/no-joystick-input=false) ;;
+    both)     INPUT_ARGS=(--prop:bool:/sim/input/no-event-input=false --prop:bool:/sim/input/no-joystick-input=false) ;;
+    off)      INPUT_ARGS=(--prop:bool:/sim/input/no-event-input=true --prop:bool:/sim/input/no-joystick-input=true --prop:bool:/sim/input/no-hid-input=true) ;;
+    *) die "unknown input mode '$1' (use event, joystick, both or off)" ;;
+  esac
+}
+
+# Before a flight: are the sticks there and the core controls bound? From a terminal it prints the
+# warnings; from the menu (no terminal) it shows a window with "Open controls" and "Fly anyway".
+controls_check() {
+  (( CONTROLS_CHECK )) || return 0
+  [[ "$INPUT" == event || "$INPUT" == both ]] || return 0
+  local f; f="$(tool_path controls)" || return 0
+  local gui=(); [[ -t 1 ]] || gui=(--gui)
+  FG_HOME="$FG_HOME_DIR" python3 "$f" check "${gui[@]}" || true
+}
+
+# Force feedback: FlightGear sends a few properties over UDP (Protocol/fgfs-mga-ffb.xml) and the
+# fgfs-mga-ffb bridge turns them into stick effects. It runs beside fgfs and stops when fgfs does.
+FFB_NODE=/dev/input/by-id/usb-Saitek_Cyborg_Evo_Force-event-joystick
+FFB_NOTE=""
+ffb_wanted() {
+  case "$FFB_RUN" in
+    1|on|yes) return 0 ;;
+    auto) [[ -e "$FFB_NODE" ]] && [[ "$(cat "/sys/class/input/$(basename "$(readlink -f "$FFB_NODE")")/device/capabilities/ff" 2>/dev/null)" =~ [1-9a-f] ]] ;;
+    *) return 1 ;;
+  esac
+}
+ffb_args() {
+  ffb_wanted || return 0
+  local tool proto; tool="$(tool_path ffb)" || { warn "force feedback is on but fgfs-mga-ffb isn't installed"; return 0; }
+  proto="$FG_ROOT_DIR/Protocol/fgfs-mga-ffb.xml"
+  if [[ -f "$(dirname "$tool")/fgfs-mga-ffb.xml" ]] && ! cmp -s "$(dirname "$tool")/fgfs-mga-ffb.xml" "$proto"; then
+    (( DRY )) || cp "$(dirname "$tool")/fgfs-mga-ffb.xml" "$proto" 2>/dev/null || warn "couldn't copy fgfs-mga-ffb.xml to $FG_ROOT_DIR/Protocol"
+  fi
+  ARGS+=("--generic=socket,out,30,127.0.0.1,5630,udp,fgfs-mga-ffb")
+  FFB_TOOL="$tool"; FFB_NOTE=", force feedback"
+}
+start_ffb() {   # $1 = the pid fgfs will have (exec keeps ours)
+  [[ -n "${FFB_TOOL:-}" ]] || return 0
+  mkdir -p "$SHARE"; nohup python3 "$FFB_TOOL" run --pid "$1" >"$SHARE/ffb.log" 2>&1 &
+}
+
+# Where the sound goes. A virtual-surround (effect_input.*) default sink turns FlightGear's output into
+# 8 channels and runs it through a filter chain: heavy on this board and a source of underruns.
+SINK_NOTE=""
+resolve_sink() {
+  local want="$AUDIO_SINK" def idx
+  [[ -n "$want" ]] && command -v pactl >/dev/null 2>&1 || return 0
+  if [[ "$want" == auto ]]; then
+    want=""
+    def="$(pactl get-default-sink 2>/dev/null)"
+    [[ "$def" == effect_input.* ]] || return 0
+    idx="$(pactl list sink-inputs 2>/dev/null | awk -v n="node.name = \"effect_output.${def#effect_input.}\"" \
+      '/^Sink Input #/ { s = "" } /^[[:space:]]*Sink:/ { s = $2 } index($0, n) { print s; exit }')"
+    [[ -n "$idx" ]] && want="$(pactl list short sinks 2>/dev/null | awk -v i="$idx" '$1 == i { print $2; exit }')"
+    [[ -n "$want" ]] || return 0
+  fi
+  export PULSE_SINK="$want"; SINK_NOTE=", sound to $want"
+}
+# A per-stream property: the graph runs at this quantum only while fgfs's stream is open.
+# (PIPEWIRE_LATENCY and PULSE_LATENCY_MSEC don't reach AeonWave's or OpenAL's PulseAudio stream.)
+set_quantum() {
+  (( AUDIO_QUANTUM > 0 )) || return 0
+  export PULSE_PROP="${PULSE_PROP:+$PULSE_PROP }node.force-quantum=$AUDIO_QUANTUM"
+}
+
+# The ROCK 5B+ headphone codec (ES8316) can come up muted, and PipeWire can start the fgfs
+# stream at 0 %. Once fgfs opens its stream, unmute both. Runs in the background, gives up
+# after two minutes or when fgfs exits. (From the old aeonwave launcher, for every build now.)
+start_audio_fix() {
+  (( AUDIO_FIX )) || return 0
+  command -v pactl >/dev/null 2>&1 || return 0
+  local card
+  card="$(awk '/es8316/ { print $1; exit }' /proc/asound/cards 2>/dev/null)"
+  (
+    trap '' HUP
+    for _ in $(seq 1 120); do
+      kill -0 "$1" 2>/dev/null || exit 0
+      id="$(pactl list sink-inputs 2>/dev/null | awk '/^Sink Input #/ { i = substr($3, 2) } /application.name = "fgfs"/ { print i; exit }')"
+      if [[ -n "$id" ]]; then
+        if [[ -n "$card" ]] && command -v amixer >/dev/null 2>&1; then
+          amixer -q -c "$card" sset 'Headphone Mixer' 100% 2>/dev/null
+          amixer -q -c "$card" sset 'Left DAC' on 2>/dev/null; amixer -q -c "$card" sset 'Right DAC' on 2>/dev/null
+          amixer -q -c "$card" cset "name='Headphone Switch'" on 2>/dev/null
+          amixer -q -c "$card" sset 'Headphone' 100% unmute 2>/dev/null
+          amixer -q -c "$card" sset 'Speaker' on 2>/dev/null; amixer -q -c "$card" cset "name='Speaker Switch'" on 2>/dev/null
+          amixer -q -c "$card" sset 'DAC' 100% 2>/dev/null
+        fi
+        pactl set-sink-input-mute "$id" 0 2>/dev/null; pactl set-sink-input-volume "$id" 100% 2>/dev/null
+        exit 0
+      fi
+      sleep 1
+    done
+  ) </dev/null >/dev/null 2>&1 &
+}
+
+# ---------- audit (read-only) ----------
+# AUDIT-BEGIN
+do_audit() {
+  local d f hits line
+  echo "== FlightGear launcher audit (read-only, changes nothing) =="
+  echo
+  echo "-- Launcher scripts that mention fgfs or FlightGear --"
+  for d in "$HOME/.local/bin" "$HOME/bin" "$HOME/Desktop" "$HOME/Downloads" /usr/local/bin; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r f; do
+      [[ -f "$f" ]] || continue
+      case "$f" in *.bak*|*.orig|*.png|*.jpg|*.zip|*.gz|*.xz|*.tar) continue ;; esac
+      case "${f##*/}" in
+        *fgfs*|*flightgear*|*FlightGear*|fg[-_]*) ;;
+        *) { grep -Iq . "$f" 2>/dev/null && grep -qiE 'fgfs|flightgear' "$f" 2>/dev/null; } || continue ;;
+      esac
+      {
+        if grep -q 'fgfs-mga shim' "$f" 2>/dev/null; then
+          echo "SHIM      $f  -> $(grep -m1 '^exec' "$f" | sed 's/^exec //')"
+        elif grep -q '^# fgfs-mga: one launcher' "$f" 2>/dev/null; then
+          echo "NEW       $f  (fgfs-mga $(grep -m1 '^VERSION=' "$f" | cut -d'"' -f2))"
+        elif grep -Iq . "$f" 2>/dev/null; then
+          echo "SCRIPT    $f"
+          grep -nE '(^|[ /"=])fgfs([ "]|$)|/fgfs\b|--aircraft=|--airport=|--addon=|exec ' "$f" 2>/dev/null | head -n 6 | sed 's/^/            /'
+        else
+          echo "PROGRAM   $f"
+        fi
+      }
+    done < <(find "$d" -maxdepth 1 \( -type f -o -type l \) 2>/dev/null | sort)
+  done
+  echo
+  echo "-- Backups of old launchers --"
+  find "$HOME/.local/bin" "$HOME/.local/share/fgfs-mga" -maxdepth 2 -type f \( -name '*fgfs*.bak*' -o -path '*fgfs-mga/backup-*' \) 2>/dev/null | sort | sed 's/^/  /'
+  echo
+  echo "-- Aliases and functions in shell startup files --"
+  hits=0
+  for f in "$HOME/.bashrc" "$HOME/.bash_aliases" "$HOME/.bash_profile" "$HOME/.profile" "$HOME/.zshrc" "$HOME/.config/fish/config.fish"; do
+    [[ -f "$f" ]] || continue
+    while IFS= read -r line; do echo "  $f:$line"; hits=1; done < <(grep -nE 'fgfs|flightgear|FG_HOME|FG_ROOT' "$f" 2>/dev/null)
+  done
+  (( hits )) || echo "  none"
+  echo
+  echo "-- Menu and desktop shortcuts (.desktop) --"
+  hits=0
+  for d in "$HOME/.local/share/applications" "$HOME/Desktop" /usr/share/applications /usr/local/share/applications "$HOME/.config/autostart"; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r f; do
+      echo "  $f"; grep -m2 -E '^(Name|Exec)=' "$f" | sed 's/^/      /'; hits=1
+    done < <(grep -lisE 'fgfs|flightgear' "$d"/*.desktop 2>/dev/null)
+  done
+  (( hits )) || echo "  none"
+  echo
+  echo "-- fgfs programs found --"
+  command -v fgfs >/dev/null 2>&1 && echo "  on PATH: $(command -v fgfs)"
+  find "$HOME/builds" -maxdepth 5 -type f -name fgfs -perm -u+x 2>/dev/null | sed 's/^/  /'
+  echo
+  echo "-- PATH --"
+  case ":$PATH:" in *":$HOME/.local/bin:"*) echo "  ~/.local/bin is on PATH" ;; *) echo "  ~/.local/bin is NOT on PATH" ;; esac
+  echo
+  echo "Paste this whole output back so anything missing can be folded into fgfs-mga."
+}
+# AUDIT-END
+
+do_list() {
+  local n map
+  say "Aircraft (short name -> FlightGear folder/id, installed?):"
+  for n in $FLEET_NAMES; do
+    map="$(fleet_map "$n")"
+    if resolve_aircraft "$n"; then printf '  %-10s %-24s yes  %s\n' "$n" "${map/ //}" "$AC_DIR"
+    else printf '  %-10s %-24s no\n' "$n" "${map/ //}"; fi
+  done
+  say "  (any other aircraft id also works, e.g. fgfs-mga c172p)"
+  say ""
+  say "Presets: $PRESETS   (default: $DEFAULT_PRESET)"
+  say ""
+  say "Builds (--build):"
+  local b t f
+  DRY=1
+  for b in source aeonwave system; do
+    pick_binary "$b" 2>/dev/null
+    if [[ -x "$BIN" ]]; then printf '  %-9s yes  %s\n' "$b" "$BIN"; else printf '  %-9s no   %s\n' "$b" "$BIN"; fi
+  done
+  say ""
+  say "Tools:"
+  for t in $TOOL_NAMES; do
+    if f="$(tool_path "$t")"; then printf '  fgfs-mga %-14s yes  %s\n' "$t" "$f"
+    else printf '  fgfs-mga %-14s no   (%s not found)\n' "$t" "$(tool_file "$t")"; fi
+  done
+  say ""
+  say "Add-ons (in load order; with --launcher, ones its window already loads are skipped):"
+  collect_addons "$ADDONS" 0
+  for t in "${ADDON_ARGS[@]}"; do t="${t#--addon=}"; printf '  %-16s %s\n' "$(addon_id "$t")" "$t"; done
+  say ""
+  say "Scenery: $FG_SCENERY_DIRS"
+  say "Controls: input $INPUT_MODE; configs: $(find "$FG_HOME_DIR/Input/Event" -name 'fgfs-mga-*.xml' -printf '%f ' 2>/dev/null)"
+  say ""
+  say "Default aircraft: $DEFAULT_AIRCRAFT   airport: $DEFAULT_AIRPORT   build: $DEFAULT_BUILD"
+  say "Config: $CONF"
+}
+
+do_legacy() {
+  local which="training" f
+  if [[ "${1:-}" == aeonwave || "${1:-}" == training ]]; then which="$1"; shift; fi
+  local name="fgfs-mga-training"
+  [[ "$which" == aeonwave ]] && name="fgfs-mga-training-aeonwave"
+  f="$(find "$SHARE" -maxdepth 2 -type f \( -path "*/backup-*/$name" -o -path "*/backup-*/${name}3124" \) 2>/dev/null | sort | tail -n 1)"
+  [[ -n "$f" ]] || die "no backup of $name found in $SHARE"
+  say "Running your original launcher: $f"
+  exec bash "$f" "$@"
+}
+
+# ---------- argument parsing ----------
+DRY=0
+MODE=run
+case "${1:-}" in
+  list)    shift; MODE=list ;;
+  audit)   shift; do_audit; exit 0 ;;
+  legacy)  shift; do_legacy "$@" ;;
+  raw)     shift; MODE=raw ;;
+  gui|openal|controller|controls|ffb|joystick-test|event-input|update|scenery-audit|aeonwave-test)
+           DRY=0; t="$1"; shift
+           [[ "${1:-}" == -n || "${1:-}" == --dry-run ]] && { DRY=1; shift; }
+           run_tool "$t" "$@" ;;
+  version|--version) say "fgfs-mga $VERSION"; exit 0 ;;
+  help|-h|--help) usage; exit 0 ;;
+esac
+[[ "$MODE" == list ]] && { do_list; exit 0; }
+
+AUDIO="$DEFAULT_BUILD"; USE_ADDONS=1; ADDON_LIST="$ADDONS"; PASS=()
+
+if [[ "$MODE" == raw ]]; then
+  # Only these options are read; everything else goes to fgfs untouched.
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --audio|--build) [[ -n "${2:-}" ]] || die "$1 needs a value"; AUDIO="$2"; shift ;;
+      --aeonwave) AUDIO=aeonwave ;;
+      --new|--fg2024) NEW_BUILD=1 ;;
+      --old) NEW_BUILD=0 ;;
+      --no-addons) USE_ADDONS=0 ;;
+      --addons) [[ -n "${2:-}" ]] || die "--addons needs a value"; ADDON_LIST="$2"; shift ;;
+      -n|--dry-run) DRY=1 ;;
+      --) shift; PASS+=("$@"); break ;;
+      *) PASS+=("$@"); break ;;
+    esac
+    shift
+  done
+fi
+
+AIRCRAFT=""; PRESET=""; AIRPORT="$DEFAULT_AIRPORT"; RUNWAY=""; FULLSCREEN=0; WINDOW=""; FPS=0
+INPUT="$INPUT_MODE"
+TELEMETRY=0; WEATHER_IN=0; FFB_RUN="$FFB"
+
+need() { [[ $# -ge 2 && -n "$2" ]] || die "$1 needs a value"; }
+while [[ "$MODE" == run && $# -gt 0 ]]; do
+  case "$1" in
+    -a|--aircraft) need "$@"; AIRCRAFT="$2"; shift ;;
+    --aircraft=*)  AIRCRAFT="${1#*=}" ;;
+    -p|--preset)   need "$@"; PRESET="$2"; shift ;;
+    --airport)     need "$@"; AIRPORT="$2"; shift ;;
+    --airport=*)   AIRPORT="${1#*=}" ;;
+    --runway)      need "$@"; RUNWAY="$2"; shift ;;
+    --runway=*)    RUNWAY="${1#*=}" ;;
+    --audio|--build) need "$@"; AUDIO="$2"; shift ;;
+    --build=*)     AUDIO="${1#*=}" ;;
+    --telemetry)   TELEMETRY=1 ;;
+    --weather-in)  WEATHER_IN=1 ;;
+    --aeonwave)    AUDIO=aeonwave ;;
+    --new|--fg2024) NEW_BUILD=1 ;;
+    --old)         NEW_BUILD=0 ;;
+    --no-addons)   USE_ADDONS=0 ;;
+    --addons)      need "$@"; ADDON_LIST="$2"; shift ;;
+    --no-terrasync) TERRASYNC=0 ;;
+    --no-tune)     COM_TUNE=0 ;;
+    --input)       need "$@"; INPUT="$2"; shift ;;
+    --input=*)     INPUT="${1#*=}" ;;
+    --no-photoscenery) PHOTOSCENERY=0 ;;
+    --fullscreen)  FULLSCREEN=1 ;;
+    --window)      need "$@"; WINDOW="$2"; shift ;;
+    --fps)         FPS=1 ;;
+    --ffb)         FFB_RUN=1 ;;
+    --no-ffb)      FFB_RUN=0 ;;
+    -n|--dry-run)  DRY=1 ;;
+    -h|--help)     usage; exit 0 ;;
+    --)            shift; PASS+=("$@"); break ;;
+    --*)           PASS+=("$1") ;;       # anything else goes straight to fgfs
+    aeonwave)      AUDIO=aeonwave ;;
+    *)
+      if is_preset "$1" && [[ -z "$PRESET" ]]; then PRESET="$1"
+      elif [[ -z "$AIRCRAFT" ]]; then AIRCRAFT="$1"
+      else die "don't know what '$1' is. Aircraft: $FLEET_NAMES. Presets: $PRESETS"
+      fi ;;
+  esac
+  shift
+done
+
+pick_binary "$AUDIO"
+export FG_HOME="$FG_HOME_DIR"     # fgfs reads FG_HOME only from the environment
+ARGS=()
+in_pass() { local x; for x in "${PASS[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
+LAUNCHER=0; in_pass --launcher && LAUNCHER=1
+if (( USE_ADDONS )); then
+  collect_addons "$ADDON_LIST" "$LAUNCHER"
+  for a in "${ADDON_ARGS[@]}"; do in_pass "$a" || ARGS+=("$a"); done
+fi
+
+if [[ "$MODE" == raw ]]; then
+  ARGS+=("${PASS[@]}")
+  if (( DRY )); then print_cmd "${ARGS[@]}"; exit 0; fi
+  controls_check
+  exec "$BIN" "${ARGS[@]}"
+fi
+
+[[ -n "$AIRCRAFT" ]] || AIRCRAFT="$DEFAULT_AIRCRAFT"
+[[ -n "$PRESET" ]] || PRESET="$DEFAULT_PRESET"
+if ! resolve_aircraft "$AIRCRAFT"; then
+  if fleet_map "$AIRCRAFT" >/dev/null; then
+    die "$AIRCRAFT isn't installed (looked for folder $(fleet_map "$AIRCRAFT" | cut -d' ' -f1) in $AIRCRAFT_DIRS). Add it to MGA_FLEET in install-mga-fleet.sh."
+  fi
+  die "aircraft '$AIRCRAFT' not found. Try: fgfs-mga list"
+fi
+PRESET_ARGS=()
+preset_args "$PRESET"
+
+ARGS+=("--fg-root=$FG_ROOT_DIR" "--fg-scenery=$FG_SCENERY_DIRS" "--fg-aircraft=$AIRCRAFT_DIRS"
+       "--aircraft-dir=$AC_DIR" "--aircraft=$AC_ID" "--airport=$AIRPORT")
+[[ -n "$RUNWAY" ]] && ARGS+=("--runway=$RUNWAY")
+if (( TERRASYNC )); then ARGS+=(--enable-terrasync); else ARGS+=(--disable-terrasync); fi
+ARGS+=("${PRESET_ARGS[@]}")
+(( FULLSCREEN )) && ARGS+=(--enable-fullscreen)
+[[ -n "$WINDOW" ]] && ARGS+=("--geometry=$WINDOW")
+(( FPS )) && ARGS+=(--prop:/sim/rendering/fps-display=true)
+radio_args() {   # RADIO_ARGS / RADIO_NOTE for the start airport, unless off or --com1/--com2 were given
+  RADIO_ARGS=(); RADIO_NOTE=""
+  [[ "$COM_TUNE" == 1 ]] && (( ! LAUNCHER )) || return 0   # the launcher window picks its own airport
+  local p f key cache line f1="" f2=""
+  for p in "${PASS[@]}"; do case "$p" in --com1=*|--com2=*) return 0 ;; esac; done
+  f="$FG_ROOT_DIR/Airports/apt.dat.gz"; [[ -f "$f" ]] || return 0
+  key="${1^^} $(stat -c %Y "$f" 2>/dev/null)"; cache="$SHARE/radio-cache"
+  line=$(grep -m1 "^$key " "$cache" 2>/dev/null) && read -r _ _ f1 f2 <<<"$line"
+  if [[ -z "$line" ]]; then
+    read -r f1 f2 < <(zcat -f "$f" 2>/dev/null | awk -v icao="${1^^}" '
+      ($1=="1" || $1=="16" || $1=="17") && NF >= 5 { if (p) exit; p = ($5 == icao); next }
+      !p { next }
+      { c = $1 + 0; m = 0
+        if (c >= 50 && c <= 56)          { m = $2 / 100;  t = c - 50 }
+        else if (c >= 1050 && c <= 1056) { m = $2 / 1000; t = c - 1050 }
+        if (m > 0 && !(t in fr)) fr[t] = sprintf("%.3f", m) }
+      END { a = (4 in fr) ? fr[4] : (1 in fr) ? fr[1] : (3 in fr) ? fr[3] : "-"
+            b = (5 in fr) ? fr[5] : (6 in fr) ? fr[6] : (0 in fr) ? fr[0] : "-"
+            print a, b }')
+    [[ -n "$f1" ]] || return 0
+    (( DRY )) || { mkdir -p "$SHARE" 2>/dev/null && printf '%s %s %s\n' "$key" "$f1" "$f2" >> "$cache" 2>/dev/null; }
+  fi
+  [[ "$f1" != "-" ]] && RADIO_ARGS+=("--com1=$f1")
+  [[ -n "$f2" && "$f2" != "-" ]] && RADIO_ARGS+=("--com2=$f2")
+  (( ${#RADIO_ARGS[@]} )) && RADIO_NOTE=", ${RADIO_ARGS[*]//--com/COM}"
+  return 0
+}
+radio_args "$AIRPORT"; ARGS+=("${RADIO_ARGS[@]}")
+proto_check() {
+  [[ -f "$FG_ROOT_DIR/Protocol/$1.xml" || -f "$FG_HOME_DIR/Protocol/$1.xml" ]] \
+    || warn "$1.xml isn't in $FG_ROOT_DIR/Protocol; copy it there from ~/Downloads or fgfs will refuse it"
+}
+(( TELEMETRY )) && { proto_check fg_telemetry_out; ARGS+=("--generic=socket,out,20,,5620,udp,fg_telemetry_out"); }
+(( WEATHER_IN )) && { proto_check fg_weather_in; ARGS+=("--generic=socket,in,4,,5610,udp,fg_weather_in"); }
+INPUT_ARGS=(); input_args "$INPUT"; ARGS+=("${INPUT_ARGS[@]}")
+PHOTO=""
+if (( PHOTOSCENERY )) && [[ ":$FG_SCENERY_DIRS:" == *":$FG_HOME_DIR/Scenery-Addons:"* && -d "$FG_HOME_DIR/Scenery-Addons/Orthophotos" ]]; then
+  ARGS+=(--prop:bool:/sim/rendering/photoscenery/enabled=true); PHOTO=", photoscenery"
+fi
+# FlightGear saves the last sound device; an AeonWave-only name left there makes OpenAL fail over with errors,
+# and the AeonWave "Audio Stream" device writes to a file instead of the speakers. Set it every start.
+if [[ "$AUDIO" == aeonwave ]]; then
+  [[ -n "$AEONWAVE_DEVICE" ]] && ARGS+=(--prop:/sim/sound/backend=aeonwave "--sound-device=$AEONWAVE_DEVICE")
+elif [[ -n "$OPENAL_DEVICE" ]]; then
+  ARGS+=("--prop:string:/sim/sound/device-name=$OPENAL_DEVICE")
+fi   # empty: pass nothing. fgfs rejects "--prop:x=" with no value and only prints its usage text; an
+     # AeonWave name left in the autosave just makes OpenAL say "trying default" and use the default.
+(( DEVELOPER )) || ARGS+=(--disable-developer)
+ffb_args
+ARGS+=("${EXTRA_ARGS[@]}" "${PASS[@]}")
+drop_empty_props() {   # fgfs stops at "--prop:name=" with nothing after "=", so never hand it one
+  local a keep=()
+  for a in "${ARGS[@]}"; do
+    if [[ "$a" == --prop:*= ]]; then warn "left out ${a%=} (no value given)"; else keep+=("$a"); fi
+  done
+  ARGS=("${keep[@]}")
+}
+drop_empty_props
+
+LW=""; (( LAUNCHER )) && LW=" (plus the ones the launcher window loads)"
+resolve_sink; set_quantum
+say "fgfs-mga: $AC_ID at $AIRPORT, preset $PRESET, build $AUDIO, ${#ADDON_ARGS[@]} add-on(s)$LW, input $INPUT$PHOTO$RADIO_NOTE$SINK_NOTE$FFB_NOTE"
+if (( DRY )); then print_cmd "${ARGS[@]}"; exit 0; fi
+controls_check
+start_audio_fix "$$"
+start_ffb "$$"
+exec "$BIN" "${ARGS[@]}"

@@ -1,0 +1,1857 @@
+#!/usr/bin/env python3
+"""fgfs-mga controls: set up Saitek (or any) joysticks for FlightGear's Linux event input.
+
+  fgfs-mga controls scan       list the controllers and every axis/button FlightGear can see
+  fgfs-mga controls gui        window: live sticks, Bind/Reverse/Clear for every FlightGear control (grouped),
+                               and a Response tab: dead zone, sensitivity, curve, limit, trim offset,
+                               smoothing and rudder brake split, for all aircraft or one, with a live curve
+  fgfs-mga controls wizard     move each control when asked; writes the FlightGear config files
+  fgfs-mga controls defaults   write configs from a standard layout without asking (best guess)
+  fgfs-mga controls test       live view: what FlightGear will get from each control
+  fgfs-mga controls show       print the current mapping, by group, with warnings
+  fgfs-mga controls check      before a flight: warn if a stick is unplugged or a core control is free
+                               (--gui: small window with Open controls / Fly anyway)
+  fgfs-mga controls bind JOB   set one job again, keep the rest (e.g. bind brakes, bind brake_left_axis)
+  fgfs-mga controls unbind JOB clear one job (e.g. unbind propeller)
+  Run "fgfs-mga controls bind" with no job for the full list.
+
+Options: --all (any joystick, not only Saitek), --dry-run (print the XML, write nothing),
+         --restart (wizard: ignore saved progress and start over)
+
+Why: FlightGear's event input names joystick buttons button-trigger, button-thumb ...
+(button-0..9 are a different Linux key range that sticks never send) and axes
+abs-x-translate, abs-z-rotate ... Values arrive as 0..1, so they must be re-centred.
+This writes ~/.fgfs/Input/Event/Saitek/fgfs-mga-<device>.xml and moves any older
+configs for the same device to a backup folder so FlightGear only sees one.
+"""
+import json
+import os
+import re
+import select
+import shutil
+import sys
+import time
+import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
+
+HOME = os.path.expanduser("~")
+FG_HOME = os.environ.get("FG_HOME", os.path.join(HOME, ".fgfs"))
+EVENT_DIR = os.path.join(FG_HOME, "Input", "Event")
+OUT_DIR = os.path.join(EVENT_DIR, "Saitek")
+MAP_FILE = os.path.join(HOME, ".config", "fgfs-mga", "controls.json")
+SHARE = os.path.join(HOME, ".local", "share", "fgfs-mga")
+SAITEK_VENDOR = 0x06A3
+
+# --- FlightGear 2024.1 FGLinuxEventInput.cxx names (copied from the source on this board) ---
+EV_KEY, EV_ABS = 1, 3
+KEY_NAMES = {}
+for i in range(10):
+    KEY_NAMES[0x100 + i] = "button-%d" % i
+for code, n in zip(range(0x110, 0x118), "left right middle side extra forward back task".split()):
+    KEY_NAMES[code] = "button-" + n
+for code, n in zip(range(0x120, 0x130), ("trigger thumb thumb2 top top2 pinkie base base2 base3 "
+                                         "base4 base5 base6").split() + [None, None, None, "dead"]):
+    if n:
+        KEY_NAMES[code] = "button-" + n
+for code, n in zip(range(0x130, 0x13F), "a b c x y z tl tr tl2 tr2 select start mode thumbl thumbr".split()):
+    KEY_NAMES[code] = "button-" + n
+KEY_NAMES[0x150], KEY_NAMES[0x151] = "button-gear-down", "button-gear-up"
+ABS_NAMES = {0x00: "abs-x-translate", 0x01: "abs-y-translate", 0x02: "abs-z-translate",
+             0x03: "abs-x-rotate", 0x04: "abs-y-rotate", 0x05: "abs-z-rotate",
+             0x06: "abs-throttle", 0x07: "abs-rudder", 0x08: "abs-wheel", 0x09: "abs-gas",
+             0x0A: "abs-brake", 0x10: "abs-hat0-x", 0x11: "abs-hat0-y", 0x12: "abs-hat1-x",
+             0x13: "abs-hat1-y", 0x14: "abs-hat2-x", 0x15: "abs-hat2-y", 0x16: "abs-hat3-x",
+             0x17: "abs-hat3-y", 0x28: "abs-misc"}
+HAT_CODES = set(range(0x10, 0x18))
+PLAIN = {0x00: "X", 0x01: "Y", 0x02: "Z", 0x03: "RX", 0x04: "RY", 0x05: "RZ (twist)", 0x06: "throttle",
+         0x07: "rudder", 0x10: "hat X", 0x11: "hat Y", 0x28: "misc"}
+
+# --- what each function does in FlightGear (GA trainer) ---
+AXES = [  # id, kind, prompt, required
+    ("aileron", "bi", "ROLL (aileron): hold the stick fully RIGHT", True),
+    ("elevator", "bi", "PITCH (elevator): hold the stick fully FORWARD (nose down)", True),
+    ("rudder", "bi", "RUDDER: twist the stick (or press the pedal) fully RIGHT and hold", True),
+    ("throttle", "uni", "THROTTLE", True),
+    ("mixture", "uni", "MIXTURE (optional, e.g. the second stick's throttle)", False),
+    ("propeller", "uni", "PROPELLER rpm (optional, only the Arrow/Seminole have one)", False),
+]
+# The wizard asks for these buttons, in this order. Every job (these and the rest) is in BUTTON_JOBS.
+BUTTONS = ["brakes", "ptt", "flaps_down", "flaps_up", "trim_down", "trim_up", "parking_brake",
+           "view_next", "view_reset", "center"]
+GLANCE_DEG = (60, 30)  # hat: look left/right and up/down while held
+
+# --- every job, for the GUI and `bind`. Groups show in this order.
+GROUPS = ["Flight", "Engine", "Gear and flaps", "Trim", "Brakes", "Lights", "Radios", "Autopilot",
+          "Views", "Sim", "Ag"]
+
+
+def _axis(group, title, kind, props, hint, probe=None):
+    return {"group": group, "title": title, "kind": kind, "props": props, "hint": hint, "probe": probe}
+
+
+E0, E1 = "/controls/engines/engine[0]/", "/controls/engines/engine[1]/"
+TWIN = ["engine[1]", 'engine n="1"']   # an aircraft file that mentions a second engine
+AXIS_JOBS = {
+    "aileron": _axis("Flight", "Roll (aileron)", "bi", ["/controls/flight/aileron"], "move the stick fully RIGHT"),
+    "elevator": _axis("Flight", "Pitch (elevator)", "bi", ["/controls/flight/elevator"],
+                      "push the stick fully FORWARD (nose down)"),
+    "rudder": _axis("Flight", "Rudder", "bi", ["/controls/flight/rudder"], "twist (or press the pedal) fully RIGHT"),
+    "throttle": _axis("Engine", "Throttle, all engines", "uni", [E0 + "throttle", E1 + "throttle"],
+                      ("IDLE (closed)", "FULL power")),
+    "mixture": _axis("Engine", "Mixture, all engines", "uni", [E0 + "mixture", E1 + "mixture"],
+                     ("IDLE CUT-OFF (lean)", "FULL RICH"), ["mixture"]),
+    "propeller": _axis("Engine", "Propeller rpm, all engines", "uni",
+                       [E0 + "propeller-pitch", E1 + "propeller-pitch"], ("LOW rpm", "HIGH rpm"), ["propeller-pitch"]),
+    "throttle_1": _axis("Engine", "Throttle, left engine", "uni", [E0 + "throttle"], ("IDLE", "FULL power"), TWIN),
+    "throttle_2": _axis("Engine", "Throttle, right engine", "uni", [E1 + "throttle"], ("IDLE", "FULL power"), TWIN),
+    "mixture_1": _axis("Engine", "Mixture, left engine", "uni", [E0 + "mixture"], ("CUT-OFF", "FULL RICH"), TWIN),
+    "mixture_2": _axis("Engine", "Mixture, right engine", "uni", [E1 + "mixture"], ("CUT-OFF", "FULL RICH"), TWIN),
+    "propeller_1": _axis("Engine", "Propeller, left engine", "uni", [E0 + "propeller-pitch"],
+                         ("LOW rpm", "HIGH rpm"), TWIN),
+    "propeller_2": _axis("Engine", "Propeller, right engine", "uni", [E1 + "propeller-pitch"],
+                         ("LOW rpm", "HIGH rpm"), TWIN),
+    "cowl_flaps_axis": _axis("Engine", "Cowl flaps lever", "uni", [E0 + "cowl-flaps-norm", E1 + "cowl-flaps-norm"],
+                             ("CLOSED", "OPEN"), ["cowl-flaps"]),
+    "flaps_axis": _axis("Gear and flaps", "Flaps lever", "uni", ["/controls/flight/flaps"], ("UP", "fully DOWN")),
+    "elevator_trim_axis": _axis("Trim", "Elevator trim wheel", "bi", ["/controls/flight/elevator-trim"],
+                                "move it fully toward nose DOWN"),
+    "aileron_trim_axis": _axis("Trim", "Aileron trim knob", "bi", ["/controls/flight/aileron-trim"],
+                               "move it fully RIGHT", ["aileron-trim"]),
+    "rudder_trim_axis": _axis("Trim", "Rudder trim knob", "bi", ["/controls/flight/rudder-trim"],
+                              "move it fully RIGHT", ["rudder-trim"]),
+    "brake_left_axis": _axis("Brakes", "Left toe brake (pedal)", "uni", ["/controls/gear/brake-left"],
+                             ("released", "fully pressed")),
+    "brake_right_axis": _axis("Brakes", "Right toe brake (pedal)", "uni", ["/controls/gear/brake-right"],
+                              ("released", "fully pressed")),
+}
+STICKS = {j for j, a in AXIS_JOBS.items() if a["kind"] == "bi"}   # centred on -1..1
+AXIS_PROP = {j: a["props"][0] for j, a in AXIS_JOBS.items()}
+UNI_ENDS = {j: a["hint"] for j, a in AXIS_JOBS.items() if a["kind"] == "uni"}
+
+
+def _nas(s):
+    return ("nasal", s)
+
+
+def _btn(group, title, press, release=None, repeat=False, probe=None):
+    return {"group": group, "title": title, "press": press, "release": release or [], "repeat": repeat,
+            "probe": probe}
+
+
+def _toggle(group, title, props, probe):
+    return _btn(group, title, [("toggle", p) for p in props], probe=probe)
+
+
+def _hold(group, title, prop, probe=None):
+    return _btn(group, title, [("assign", prop, "true")], [("assign", prop, "false")], probe=probe)
+
+
+def _kap(fn):  # only does something on aircraft that load the KAP 140 autopilot
+    return [_nas('if (contains(globals, "kap140")) kap140.%s();' % fn)]
+
+
+def _cowl(step):
+    return [_nas('foreach (var e; [0, 1]) { var p = "/controls/engines/engine[" ~ e ~ "]/cowl-flaps-norm";'
+                 ' setprop(p, math.min(1, math.max(0, (getprop(p) or 0) + %s))); }' % step)]
+
+
+FUEL_CYCLE = ('var l = getprop("/controls/fuel/tank[0]/selected"); var r = getprop("/controls/fuel/tank[1]/selected");'
+              ' if (l and r) { l = 1; r = 0; } elsif (l) { l = 0; r = 1; } else { l = 1; r = 1; }'
+              ' setprop("/controls/fuel/tank[0]/selected", l); setprop("/controls/fuel/tank[1]/selected", r);'
+              ' gui.popupTip("Fuel: " ~ (l and r ? "both" : (l ? "left" : "right")));')
+HOLD_PROP = "/input/fgfs-mga/brake-hold"   # the brakes button also sets this, for the rudder/brake split
+BUTTON_JOBS = {
+    "brakes": _btn("Brakes", "Wheel brakes, both (hold)",
+                   [_nas("controls.applyBrakes(1);"), ("assign", HOLD_PROP, "true")],
+                   [_nas("controls.applyBrakes(0);"), ("assign", HOLD_PROP, "false")]),
+    "brake_left": _btn("Brakes", "Left brake (hold)", [_nas("controls.applyBrakes(1, -1);")],
+                       [_nas("controls.applyBrakes(0, -1);")]),
+    "brake_right": _btn("Brakes", "Right brake (hold)", [_nas("controls.applyBrakes(1, 1);")],
+                        [_nas("controls.applyBrakes(0, 1);")]),
+    "parking_brake": _btn("Brakes", "Parking brake on/off", [_nas("controls.applyParkingBrake(1);")],
+                          [_nas("controls.applyParkingBrake(0);")]),
+    "starter": _btn("Engine", "Starter (hold)", [_nas("controls.startEngine(1);")], [_nas("controls.startEngine(0);")]),
+    "mags_up": _btn("Engine", "Magnetos one step up (OFF, R, L, BOTH, START)", [_nas("controls.stepMagnetos(1);")],
+                    [_nas("controls.stepMagnetos(0);")]),
+    "mags_down": _btn("Engine", "Magnetos one step down", [_nas("controls.stepMagnetos(-1);")],
+                      [_nas("controls.stepMagnetos(0);")]),
+    "primer": _hold("Engine", "Primer (hold)", E0 + "primer", ["primer"]),
+    "carb_heat": _toggle("Engine", "Carburettor heat on/off", ["/controls/anti-ice/engine[0]/carb-heat",
+                                                               "/controls/anti-ice/engine[1]/carb-heat"], ["carb-heat"]),
+    "fuel_pump": _toggle("Engine", "Electric fuel pump on/off", [E0 + "fuel-pump", E1 + "fuel-pump"], ["fuel-pump"]),
+    "fuel_selector": _btn("Engine", "Fuel tank: both, left, right", [_nas(FUEL_CYCLE)], probe=["selected"]),
+    "cowl_open": _btn("Engine", "Cowl flaps open a little (hold)", _cowl("0.05"), repeat=True, probe=["cowl-flaps"]),
+    "cowl_close": _btn("Engine", "Cowl flaps close a little (hold)", _cowl("-0.05"), repeat=True, probe=["cowl-flaps"]),
+    "flaps_down": _btn("Gear and flaps", "Flaps down one notch", [_nas("controls.flapsDown(1);")],
+                       [_nas("controls.flapsDown(0);")]),
+    "flaps_up": _btn("Gear and flaps", "Flaps up one notch", [_nas("controls.flapsDown(-1);")],
+                     [_nas("controls.flapsDown(0);")]),
+    "gear_down": _btn("Gear and flaps", "Gear down", [_nas("controls.gearDown(1);")], [_nas("controls.gearDown(0);")],
+                      probe=["gear-down"]),
+    "gear_up": _btn("Gear and flaps", "Gear up", [_nas("controls.gearDown(-1);")], [_nas("controls.gearDown(0);")],
+                    probe=["gear-down"]),
+    "gear_toggle": _btn("Gear and flaps", "Gear up/down", [_nas("controls.gearToggle();")], probe=["gear-down"]),
+    "speedbrake": _toggle("Gear and flaps", "Speed brake in/out", ["/controls/flight/speedbrake"], ["speedbrake"]),
+    "spoilers_more": _btn("Gear and flaps", "Spoilers one step out", [_nas("controls.stepSpoilers(1);")],
+                          probe=["spoilers"]),
+    "spoilers_less": _btn("Gear and flaps", "Spoilers one step in", [_nas("controls.stepSpoilers(-1);")],
+                          probe=["spoilers"]),
+    "trim_down": _btn("Trim", "Elevator trim nose DOWN (hold)", [_nas("controls.elevatorTrim(1);")], repeat=True),
+    "trim_up": _btn("Trim", "Elevator trim nose UP (hold)", [_nas("controls.elevatorTrim(-1);")], repeat=True),
+    "aileron_trim_left": _btn("Trim", "Aileron trim LEFT (hold)", [_nas("controls.aileronTrim(-1);")], repeat=True,
+                              probe=["aileron-trim"]),
+    "aileron_trim_right": _btn("Trim", "Aileron trim RIGHT (hold)", [_nas("controls.aileronTrim(1);")], repeat=True,
+                               probe=["aileron-trim"]),
+    "rudder_trim_left": _btn("Trim", "Rudder trim LEFT (hold)", [_nas("controls.rudderTrim(-1);")], repeat=True,
+                             probe=["rudder-trim"]),
+    "rudder_trim_right": _btn("Trim", "Rudder trim RIGHT (hold)", [_nas("controls.rudderTrim(1);")], repeat=True,
+                              probe=["rudder-trim"]),
+    "center": _btn("Trim", "Centre trims and controls", [_nas("controls.centerFlightControls();")]),
+    "landing_light": _toggle("Lights", "Landing light on/off", ["/controls/lighting/landing-lights",
+                                                                "/controls/lighting/landing-light"], ["landing-light"]),
+    "taxi_light": _toggle("Lights", "Taxi light on/off", ["/controls/lighting/taxi-light"], ["taxi-light"]),
+    "nav_lights": _toggle("Lights", "Nav lights on/off", ["/controls/lighting/nav-lights"], ["nav-lights"]),
+    "strobe": _toggle("Lights", "Strobes on/off", ["/controls/lighting/strobe"], ["lighting/strobe"]),
+    "beacon": _toggle("Lights", "Beacon on/off", ["/controls/lighting/beacon"], ["lighting/beacon"]),
+    "ptt": _btn("Radios", "Push-to-talk COM1 for ATC (hold)", [_nas("controls.ptt(1);")], [_nas("controls.ptt(0);")]),
+    "ptt2": _btn("Radios", "Push-to-talk COM2 (hold)", [_nas("controls.ptt(2);")], [_nas("controls.ptt(0);")]),
+    "com1_swap": _btn("Radios", "COM1 swap active/standby", [("swap", "/instrumentation/comm[0]/frequencies/selected-mhz",
+                                                               "/instrumentation/comm[0]/frequencies/standby-mhz")]),
+    "com2_swap": _btn("Radios", "COM2 swap active/standby", [("swap", "/instrumentation/comm[1]/frequencies/selected-mhz",
+                                                               "/instrumentation/comm[1]/frequencies/standby-mhz")],
+                      probe=["comm[1]"]),
+    "nav1_swap": _btn("Radios", "NAV1 swap active/standby", [("swap", "/instrumentation/nav[0]/frequencies/selected-mhz",
+                                                               "/instrumentation/nav[0]/frequencies/standby-mhz")]),
+    "ident": _hold("Radios", "Transponder IDENT", "/instrumentation/transponder/inputs/ident-btn"),
+    "ap_disconnect": _btn("Autopilot", "Autopilot disconnect", [_nas("controls.autopilotDisconnect();")]),
+    "kap_ap": _btn("Autopilot", "KAP 140: AP on/off", _kap("apButton"), probe=["kap140"]),
+    "kap_hdg": _btn("Autopilot", "KAP 140: HDG", _kap("hdgButton"), probe=["kap140"]),
+    "kap_nav": _btn("Autopilot", "KAP 140: NAV", _kap("navButton"), probe=["kap140"]),
+    "kap_apr": _btn("Autopilot", "KAP 140: APR", _kap("aprButton"), probe=["kap140"]),
+    "kap_alt": _btn("Autopilot", "KAP 140: ALT hold", _kap("altButton"), probe=["kap140"]),
+    "kap_up": _btn("Autopilot", "KAP 140: UP", _kap("upButton"), probe=["kap140"]),
+    "kap_down": _btn("Autopilot", "KAP 140: DN", _kap("downButton"), probe=["kap140"]),
+    "view_next": _btn("Views", "Next view (cockpit, outside, tower...)", [_nas("view.stepView(1);")]),
+    "view_prev": _btn("Views", "Previous view", [_nas("view.stepView(-1);")]),
+    "view_reset": _btn("Views", "Back to the cockpit view, looking ahead", [_nas("view.resetView();")]),
+    "zoom_in": _btn("Views", "Zoom in (hold)", [_nas("view.decrease();")], repeat=True),
+    "zoom_out": _btn("Views", "Zoom out (hold)", [_nas("view.increase();")], repeat=True),
+    "zoom_reset": _btn("Views", "Zoom back to normal", [_nas("view.resetFOV();")]),
+    "look_left": _btn("Views", "Turn your head left (hold)", [_nas("view.panViewDir(1);")], repeat=True),
+    "look_right": _btn("Views", "Turn your head right (hold)", [_nas("view.panViewDir(-1);")], repeat=True),
+    "look_up": _btn("Views", "Look up (hold)", [_nas("view.panViewPitch(1);")], repeat=True),
+    "look_down": _btn("Views", "Look down (hold)", [_nas("view.panViewPitch(-1);")], repeat=True),
+    "pause": _btn("Sim", "Pause on/off", [("cmd", "pause")]),
+    "replay": _btn("Sim", "Instant replay", [("cmd", "replay")]),
+    "speed_up": _btn("Sim", "Sim speed up (time x2)", [_nas("controls.speedup(1);")]),
+    "slow_down": _btn("Sim", "Sim speed down", [_nas("controls.speedup(-1);")]),
+    "screenshot": _btn("Sim", "Screenshot", [("cmd", "screen-capture")]),
+    "atc_menu": _btn("Sim", "ATC menu", [("cmd", "ATC-dialog")]),
+    "spray": _toggle("Ag", "Spray on/off (for aircraft that read /controls/ag/spray)", ["/controls/ag/spray"],
+                     ["controls/ag/spray"]),
+}
+HAT_JOB = {"group": "Views", "title": "Glance around (hat)", "hint": "push the hat in any direction", "probe": None}
+JOBS = dict(AXIS_JOBS)
+JOBS["hat"] = HAT_JOB
+JOBS.update(BUTTON_JOBS)
+CORE = ["aileron", "elevator", "rudder", "throttle", "brakes"]   # flying without these is hard work
+
+# --- response shaping, per axis, per aircraft (or "default")
+SHAPE_KEYS = ["deadzone", "sensitivity", "expo", "limit", "offset", "smooth", "split"]
+SHAPE_RANGE = {"deadzone": (0.0, 0.3), "sensitivity": (0.3, 2.0), "expo": (0.0, 1.0), "limit": (0.2, 1.0),
+               "offset": (-0.3, 0.3), "smooth": (0.0, 0.95)}
+SHAPE_HELP = {"deadzone": "Dead zone: how far the stick moves before anything happens",
+              "sensitivity": "Sensitivity: output per unit of stick (above 1 reaches full sooner)",
+              "expo": "Curve: 0 straight, 1 soft in the middle and strong at the ends",
+              "limit": "End limit: the most the control can reach",
+              "offset": "Centre offset (trim): shifts the whole range",
+              "smooth": "Smoothing: 0 instant, higher eases out jitter (adds lag)",
+              "split": "Rudder steers the brakes while the brake button is held"}
+
+
+def shape_default(job):
+    return {"deadzone": 0.04 if job in STICKS else 0.0, "sensitivity": 1.0, "expo": 0.0, "limit": 1.0,
+            "offset": 0.0, "smooth": 0.0, "split": False}
+
+
+def get_shape(mapping, job, aircraft=None):
+    shapes = (mapping or {}).get("shapes") or {}
+    s = shape_default(job)
+    s.update((shapes.get("default") or {}).get(job) or {})
+    if aircraft:
+        s.update((shapes.get(aircraft) or {}).get(job) or {})
+    return s
+
+
+def apply_shape(job, x, s):
+    """Calibrated value (-1..1 for sticks, 0..1 for levers) -> what FlightGear gets. Mirrored in the Nasal."""
+    stick = job in STICKS
+    a = abs(x) if stick else max(0.0, min(1.0, x))
+    dz = s["deadzone"]
+    a = 0.0 if a <= dz else (a - dz) / (1.0 - dz)
+    a = (1.0 - s["expo"]) * a + s["expo"] * a ** 3
+    a = min(a * s["sensitivity"], s["limit"])
+    y = (a if x >= 0 else -a) if stick else a
+    y += s["offset"]
+    return max(-1.0, min(1.0, y)) if stick else max(0.0, min(1.0, y))
+
+
+def job_title(job):
+    return JOBS[job]["title"]
+
+
+def shape_handles(job, s):
+    """Where the curve editor draws its three drag handles, in (input, output) units:
+    dead zone on the rest line, the curve's midpoint (sets the curve), and the end limit."""
+    dz = s["deadzone"]
+    xm = dz + (1.0 - dz) * 0.5
+    return {"deadzone": (dz, s["offset"] if job in STICKS else max(0.0, s["offset"])),
+            "curve": (xm, apply_shape(job, xm, s)),
+            "limit": (1.0, max(-1.0, min(1.0, s["limit"] + s["offset"])))}
+
+
+def drag_shape(job, s, handle, x, y):
+    """Turn a handle dragged to (input x, output y) into new settings {key: value}, clamped to SHAPE_RANGE.
+    Only the positive half is edited; sticks are mirrored."""
+    def clamp(key, v):
+        lo, hi = SHAPE_RANGE[key]
+        return round(max(lo, min(hi, v)), 3)
+    if handle == "deadzone":
+        return {"deadzone": clamp("deadzone", abs(x))}
+    if handle == "limit":
+        return {"limit": clamp("limit", abs(y) - s["offset"])}
+    if handle == "curve":
+        base = (abs(y) - s["offset"]) / max(s["sensitivity"], 1e-6)   # output at the midpoint before the limit
+        return {"expo": round(max(0.0, min(1.0, (0.5 - base) / 0.375)), 3)}
+    return {}
+
+
+def find_aircraft(dirs=None):
+    """{aircraft id: folder} for every *-set.xml under the aircraft folders (one level of catalog nesting)."""
+    dirs = dirs or [os.path.join(FG_HOME, "Aircraft")]
+    out = {}
+    for base in dirs:
+        for root, subdirs, files in os.walk(base):
+            if root.count(os.sep) - base.count(os.sep) > 3:
+                subdirs[:] = []
+                continue
+            subdirs[:] = [d for d in subdirs if d not in ("Models", "Sounds", "Nasal", "Systems", "Liveries")]
+            for f in files:
+                if f.endswith("-set.xml"):
+                    out.setdefault(f[:-8], root)
+    return dict(sorted(out.items()))
+
+
+def aircraft_text(folder, limit=24 << 20):
+    """All the XML and Nasal text in one aircraft folder, lower-cased, for the support marks."""
+    parts, size = [], 0
+    for root, _dirs, files in os.walk(folder):
+        for f in files:
+            if f.endswith((".xml", ".nas")):
+                try:
+                    with open(os.path.join(root, f), errors="replace") as fh:
+                        t = fh.read()
+                except OSError:
+                    continue
+                parts.append(t)
+                size += len(t)
+                if size > limit:
+                    return "\n".join(parts).lower()
+    return "\n".join(parts).lower()
+
+
+def supported(job, text):
+    """True if the aircraft's files mention what the job drives, False if not, None if no aircraft picked."""
+    if text is None:
+        return None
+    probe = JOBS[job].get("probe")
+    return True if not probe else any(p.lower() in text for p in probe)
+
+
+def key_name(code):
+    return KEY_NAMES.get(code, "button-%d" % code)
+
+
+def abs_name(code):
+    return ABS_NAMES.get(code, "abs-%d" % code)
+
+
+def hat_codes(d):
+    return [c for c in (0x10, 0x11) if c in [x[0] for x in describe(d)[0]]]
+
+
+def slug(name):
+    return re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-") or "joystick"
+
+
+# ------------------------------------------------------------------ devices
+def evdev_mod():
+    try:
+        import evdev  # noqa: F401
+        return evdev
+    except ImportError:
+        sys.exit("python3-evdev is missing: sudo apt install python3-evdev")
+
+
+SYS_INPUT = os.environ.get("FGFS_MGA_SYS_INPUT", "/sys/class/input")
+
+
+def is_dead_copy(path):
+    """True for an input node whose USB device is gone: a copy a failed driver probe left behind. It opens
+    fine but never sends anything, and only a restart clears it (replugging adds a fresh copy beside it)."""
+    if not os.path.isdir(SYS_INPUT):
+        return False
+    return not os.path.exists(os.path.join(SYS_INPUT, os.path.basename(path), "device"))
+
+
+def find_devices(all_sticks=False):
+    evdev = evdev_mod()
+    found, denied = [], []
+    for path in sorted(evdev.list_devices(), key=lambda p: int(re.sub(r"\D", "", p) or 0)):
+        if is_dead_copy(path):
+            continue
+        try:
+            d = evdev.InputDevice(path)
+        except PermissionError:
+            denied.append(path)
+            continue
+        caps = d.capabilities()
+        if EV_ABS not in caps:
+            continue
+        is_saitek = d.info.vendor == SAITEK_VENDOR or re.search(r"saitek|cyborg", d.name, re.I)
+        keys = set(caps.get(EV_KEY, []))
+        joyish = keys & set(range(0x120, 0x130)) or keys & set(range(0x130, 0x13F))
+        if is_saitek or (all_sticks and joyish):
+            found.append(d)
+    if not found and denied:
+        print("Can't read %s. Unplug and replug the controllers (the udev rule gives you access),"
+              " or check /etc/udev/rules.d/70-flightgear-saitek-input.rules." % ", ".join(denied))
+    return found
+
+
+def dev_key(d):
+    return "%04x:%04x %s" % (d.info.vendor, d.info.product, d.name)
+
+
+def describe(d):
+    caps = d.capabilities(absinfo=True)
+    axes, buttons = [], []
+    for code, ai in caps.get(EV_ABS, []):
+        n = ABS_NAMES.get(code, "unknown-3-%d" % code)
+        axes.append((code, n, ai.min, ai.max, ai.value))
+    for code in caps.get(EV_KEY, []):
+        buttons.append((code, key_name(code)))
+    return axes, buttons
+
+
+def cmd_scan(args):
+    devs = find_devices("--all" in args)
+    if not devs:
+        print("No Saitek controller found. Plug both in (straight into the board, not a hub if you can) and run again.")
+        return 1
+    for d in devs:
+        axes, buttons = describe(d)
+        ff = " (force feedback capable)" if 0x15 in d.capabilities() else ""
+        print("%s  %s  usb %04x:%04x%s" % (d.path, d.name, d.info.vendor, d.info.product, ff))
+        for code, n, lo, hi, v in axes:
+            print("   axis   %-17s %-12s range %d..%d, now %d" % (n, PLAIN.get(code, ""), lo, hi, v))
+        print("   buttons (%d): %s" % (len(buttons), " ".join(b[1].replace("button-", "") for b in buttons)))
+    return 0
+
+
+# ------------------------------------------------------------------ mapping
+def load_map():
+    try:
+        with open(MAP_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def norm(d, code, value):
+    ai = d.absinfo(code)
+    return 0.0 if ai.max == ai.min else (value - ai.min) / float(ai.max - ai.min)
+
+
+def snapshot(devs):
+    snap = {}
+    for d in devs:
+        for code, _n, _lo, _hi, _v in describe(d)[0]:
+            snap[(d.path, code)] = norm(d, code, d.absinfo(code).value)
+    return snap
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip().lower()
+    except EOFError:
+        return "q"
+
+
+def pick_axis(devs, a, b, used, hats_ok=False, min_move=0.25):
+    best, bd = None, 0.0
+    for k in a:
+        if k in used or (k[1] in HAT_CODES and not hats_ok):
+            continue
+        diff = b.get(k, a[k]) - a[k]
+        if abs(diff) > abs(bd):
+            best, bd = k, diff
+    if best is None or abs(bd) < min_move:
+        return None, 0
+    return best, (1 if bd > 0 else -1)
+
+
+def wait_button(devs, used, timeout=30):
+    """First new key press on any device. Enter on the keyboard = skip."""
+    for d in devs:
+        while d.read_one() is not None:
+            pass
+    end = time.time() + timeout
+    while time.time() < end:
+        r, _w, _x = select.select([sys.stdin] + devs, [], [], 0.2)
+        for src in r:
+            if src is sys.stdin:
+                sys.stdin.readline()
+                return None
+            for ev in src.read():
+                if ev.type == EV_KEY and ev.value == 1 and (src.path, ev.code) not in used:
+                    return (src.path, ev.code)
+    return None
+
+
+def calibrate(devs):
+    """Track every axis's lowest and highest reading until Enter (normalised 0..1)."""
+    lo, hi = {}, {}
+    for d in devs:
+        while d.read_one() is not None:
+            pass
+    while True:
+        r, _w, _x = select.select([sys.stdin] + devs, [], [], 0.2)
+        for src in r:
+            if src is sys.stdin:
+                sys.stdin.readline()
+                return lo, hi
+            for ev in src.read():
+                if ev.type == EV_ABS and ev.code not in HAT_CODES:
+                    k = (src.path, ev.code)
+                    n = norm(src, ev.code, ev.value)
+                    lo[k] = min(lo.get(k, n), n)
+                    hi[k] = max(hi.get(k, n), n)
+
+
+def cal_for(k, lo, hi, centre):
+    if k in lo and hi[k] - lo[k] >= 0.3:
+        return [round(lo[k], 4), round(centre.get(k, (lo[k] + hi[k]) / 2), 4), round(hi[k], 4)]
+    return None
+
+
+PARTIAL = os.path.join(HOME, ".config", "fgfs-mga", "controls-partial.json")
+
+
+def save_partial(names, state):
+    """Progress after every step, so a stop or a crash doesn't mean starting over."""
+    def keyed(dct):
+        return {"%s|%d" % (dev_key(names[p]), c): v for (p, c), v in dct.items()}
+    out = {"lo": keyed(state["lo"]), "hi": keyed(state["hi"]), "centre": keyed(state["centre"]),
+           "mapping": state["mapping"], "axes_done": state["axes_done"], "buttons_done": state["buttons_done"]}
+    os.makedirs(os.path.dirname(PARTIAL), exist_ok=True)
+    with open(PARTIAL + ".tmp", "w") as f:
+        json.dump(out, f, indent=1)
+    os.replace(PARTIAL + ".tmp", PARTIAL)
+
+
+def load_partial(devs):
+    """Saved progress for these same controllers, or None."""
+    try:
+        with open(PARTIAL) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None
+    path_of = {dev_key(d): d.path for d in devs}
+
+    def unkeyed(dct):
+        out = {}
+        for k, v in dct.items():
+            dk, _, code = k.rpartition("|")
+            if dk not in path_of:
+                raise KeyError(dk)
+            out[(path_of[dk], int(code))] = v
+        return out
+    try:
+        state = {"lo": unkeyed(raw["lo"]), "hi": unkeyed(raw["hi"]), "centre": unkeyed(raw["centre"]),
+                 "mapping": raw["mapping"], "axes_done": raw["axes_done"], "buttons_done": raw["buttons_done"]}
+        for part in ("axes", "buttons"):
+            for v in state["mapping"][part].values():
+                if v["dev"] not in path_of:
+                    raise KeyError(v["dev"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    return state
+
+
+def cmd_wizard(args):
+    devs = find_devices("--all" in args)
+    if not devs:
+        print("No Saitek controller found. Plug them in and run: fgfs-mga controls wizard")
+        return 1
+    names = {d.path: d for d in devs}
+    path_of = {dev_key(d): d.path for d in devs}
+    print("Found: " + "; ".join("%s (%s)" % (d.name, d.path) for d in devs))
+    print("For each step, do what it says, keep holding, and press Enter with your other hand.")
+    print("Type s then Enter to skip a step, q then Enter to stop (progress is kept).\n")
+    state = None if "--restart" in args else load_partial(devs)
+    if state and (state["axes_done"] or state["buttons_done"]):
+        done = ", ".join(state["axes_done"] + state["buttons_done"])
+        if ask("Picking up where you stopped (done: %s). Press Enter, or type r to start over " % done) == "r":
+            state = None
+    if not state:
+        print("1) Calibrate: move BOTH sticks in full circles, twist each fully left and right,")
+        print("   and run each throttle lever end to end, two or three times. Then press Enter.")
+        cal_lo, cal_hi = calibrate(devs)
+        if ask("2) Now let go of everything (sticks centred) and press Enter ") == "q":
+            return 1
+        state = {"lo": cal_lo, "hi": cal_hi, "centre": snapshot(devs),
+                 "mapping": {"axes": {}, "buttons": {}, "hat": {}}, "axes_done": [], "buttons_done": []}
+        save_partial(names, state)
+    mapping, centre = state["mapping"], state["centre"]
+    used = {(path_of[a["dev"]], a["code"]) for a in mapping["axes"].values()}
+    r = ""
+    for fid, kind, prompt, required in AXES:
+        if fid in state["axes_done"]:
+            continue
+        while True:
+            if kind == "bi":
+                r = ask("%s, press Enter %s" % (prompt, "" if required else "(s = skip) "))
+                if r in ("s", "q"):
+                    break
+                # twists travel less than the stick, so a smaller move counts there
+                k, direction = pick_axis(devs, centre, snapshot(devs), used, min_move=0.12 if fid == "rudder" else 0.2)
+            else:
+                end_lo, end_hi = UNI_ENDS[fid]
+                r = ask("%s: set it to %s, press Enter %s" % (prompt, end_lo, "" if required else "(s = skip) "))
+                if r in ("s", "q"):
+                    break
+                before = snapshot(devs)
+                r = ask("  now move it to %s, press Enter " % end_hi)
+                if r in ("s", "q"):
+                    break
+                k, direction = pick_axis(devs, before, snapshot(devs), used)
+            if k is None:
+                print("  didn't see anything move far enough; try again (s to skip)")
+                continue
+            used.add(k)
+            mapping["axes"][fid] = {"dev": dev_key(names[k[0]]), "code": k[1], "dir": direction,
+                                    "cal": cal_for(k, state["lo"], state["hi"], centre)}
+            print("  -> %s on %s" % (PLAIN.get(k[1], abs_name(k[1])), names[k[0]].name))
+            break
+        if r == "q":
+            print("Stopped. Run 'fgfs-mga controls wizard' again to carry on from here.")
+            return 1
+        state["axes_done"].append(fid)
+        save_partial(names, state)
+    # hat: glance view on the stick that does roll, if it has one
+    roll = mapping["axes"].get("aileron")
+    if "hat" not in state["buttons_done"]:
+        for d in devs:
+            if roll and dev_key(d) == roll["dev"]:
+                codes = [c for c in (0x10, 0x11) if c in dict((x[0], 1) for x in describe(d)[0])]
+                if codes and ask("Use the hat on %s to glance around while held? [Y/n] " % d.name) != "n":
+                    mapping["hat"] = {"dev": dev_key(d), "codes": codes}
+        state["buttons_done"].append("hat")
+        save_partial(names, state)
+    print("\nButtons: press the button you want for each job, or press Enter to leave it free.")
+    btn_used = {(path_of[b["dev"]], b["code"]) for b in mapping["buttons"].values()}
+    for fid in BUTTONS:
+        what = BUTTON_JOBS[fid]["title"]
+        if fid in state["buttons_done"]:
+            continue
+        print("  %-42s ... " % what, end="", flush=True)
+        k = wait_button(devs, btn_used)
+        if k is None:
+            print("free")
+        else:
+            btn_used.add(k)
+            mapping["buttons"][fid] = {"dev": dev_key(names[k[0]]), "code": k[1]}
+            print("%s on %s" % (key_name(k[1]).replace("button-", ""), names[k[0]].name))
+        state["buttons_done"].append(fid)
+        save_partial(names, state)
+    rc = write_all(devs, mapping, "--dry-run" in args)
+    if rc == 0 and "--dry-run" not in args:
+        os.remove(PARTIAL)
+    return rc
+
+
+def cmd_defaults(args):
+    devs = find_devices("--all" in args)
+    if not devs:
+        print("No Saitek controller found.")
+        return 1
+    # primary = the stick with X/Y that has the most axes; Evo Force wins ties
+    devs.sort(key=lambda d: (-len(describe(d)[0]), "evo" not in d.name.lower()))
+    p = devs[0]
+    acodes = [a[0] for a in describe(p)[0]]
+    bcodes = [b[0] for b in describe(p)[1]]
+    k = dev_key(p)
+    m = {"axes": {}, "buttons": {}, "hat": {}}
+    m["axes"]["aileron"] = {"dev": k, "code": 0x00, "dir": 1}
+    m["axes"]["elevator"] = {"dev": k, "code": 0x01, "dir": -1}   # stick forward = low raw value
+    for c in (0x05, 0x07):
+        if c in acodes:
+            m["axes"]["rudder"] = {"dev": k, "code": c, "dir": 1}
+            break
+    for c in (0x06, 0x02):
+        if c in acodes:
+            m["axes"]["throttle"] = {"dev": k, "code": c, "dir": -1}  # Saitek: lever forward = low raw value
+            break
+    if len(devs) > 1:
+        sk = dev_key(devs[1])
+        sc = [a[0] for a in describe(devs[1])[0]]
+        for c in (0x06, 0x02):
+            if c in sc:
+                m["axes"]["mixture"] = {"dev": sk, "code": c, "dir": -1}
+                break
+    if 0x10 in acodes:
+        m["hat"] = {"dev": k, "codes": [c for c in (0x10, 0x11) if c in acodes]}
+    order = ["brakes", "ptt", "view_next", "view_reset", "flaps_up", "flaps_down",
+             "trim_down", "trim_up", "parking_brake", "center"]
+    for fid, code in zip(order, [c for c in bcodes if 0x120 <= c < 0x140]):
+        m["buttons"][fid] = {"dev": k, "code": code}
+    print("Wrote a best-guess layout. Run 'fgfs-mga controls test' to check it, or the wizard to set it by hand.")
+    return write_all(devs, m, "--dry-run" in args)
+
+
+# ------------------------------------------------------------------ XML
+def interp_points(fid, a):
+    """Calibrated axis -> list of (input, output) points FlightGear's interpolater uses, or None.
+    Sticks work on the -1..1 value (after min-range/max-range) and come out -1..1 centred on the
+    measured centre; levers work on the raw 0..1 value and come out 0..1, reversed if need be."""
+    cal = a.get("cal")
+    if not cal:
+        return None
+    lo, c, hi = cal
+    if fid in STICKS:
+        lo, c, hi = 2 * lo - 1, 2 * c - 1, 2 * hi - 1
+        if not lo < c < hi:
+            return None
+        return [(lo, -1.0), (c, 0.0), (hi, 1.0)]
+    return [(lo, 0.0), (hi, 1.0)] if a["dir"] > 0 else [(lo, 1.0), (hi, 0.0)]
+
+
+def cal_value(fid, a, n):
+    """Normalised device value n (0..1) -> the calibrated value the XML writes to the raw property."""
+    pts = interp_points(fid, a)
+    stick = fid in STICKS
+    v = 2 * n - 1 if stick else n
+    if pts:
+        if v <= pts[0][0]:
+            v = pts[0][1]
+        elif v >= pts[-1][0]:
+            v = pts[-1][1]
+        else:
+            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+                if x0 <= v <= x1:
+                    v = y0 + (y1 - y0) * (v - x0) / (x1 - x0)
+                    break
+        return v * a["dir"] if stick else v
+    if stick:
+        return v * a["dir"]
+    return n if a["dir"] > 0 else 1 - n
+
+
+def fg_value(fid, a, n, shape=None):
+    """What FlightGear will put in the control for normalised input n (mirrors the XML and its Nasal)."""
+    return apply_shape(fid, cal_value(fid, a, n), shape or shape_default(fid))
+
+
+RAW = "/input/fgfs-mga/raw/"
+
+
+def axis_xml(fid, a):
+    """The event writes the calibrated value to /input/fgfs-mga/raw/<job>; the device's Nasal shapes it."""
+    code, direction = a["code"], a["dir"]
+    pts = interp_points(fid, a)
+    stick = fid in STICKS
+    lines = ["  <event>", "    <desc>%s</desc>" % escape(job_title(fid)), "    <name>%s</name>" % abs_name(code)]
+    if stick:   # 0..1 from the device -> -1..1
+        lines += ["    <min-range>0</min-range>", "    <max-range>1</max-range>"]
+    if pts:     # measured ends and centre of this control, so its travel maps to the full range
+        lines.append("    <interpolater>")
+        for x, y in pts:
+            lines.append("      <entry><ind>%.4f</ind><dep>%g</dep></entry>" % (x, y))
+        lines.append("    </interpolater>")
+        offset, factor = 0.0, (float(direction) if stick else 1.0)
+    elif stick:
+        offset, factor = 0.0, float(direction)
+    else:
+        offset, factor = (0.0, 1.0) if direction > 0 else (-1.0, -1.0)
+    lines += ["    <binding>", "      <command>property-scale</command>",
+              "      <property>%s%s</property>" % (RAW, fid),
+              "      <offset>%g</offset>" % offset, "      <factor>%g</factor>" % factor, "    </binding>",
+              "  </event>"]
+    return lines
+
+
+def hat_xml(code):
+    deg = GLANCE_DEG[0] if code in (0x10, 0x12) else GLANCE_DEG[1]
+    prop = "/sim/current-view/goal-heading-offset-deg" if code in (0x10, 0x12) else "/sim/current-view/goal-pitch-offset-deg"
+    # hat right / hat up -> look right / look up (FlightGear heading offset is positive to the left)
+    return ["  <event>", "    <desc>Glance %s while the hat is held</desc>" % ("left/right" if deg == 60 else "up/down"),
+            "    <name>%s</name>" % abs_name(code), "    <min-range>0</min-range>", "    <max-range>1</max-range>",
+            "    <binding>", "      <command>property-scale</command>", "      <property>%s</property>" % prop,
+            "      <factor>%d</factor>" % -deg, "    </binding>", "  </event>"]
+
+
+def binding_xml(b, indent):
+    sp = " " * indent
+    kind = b[0]
+    if kind == "nasal":
+        body = ["<command>nasal</command>", "<script>%s</script>" % escape(b[1])]
+    elif kind == "toggle":
+        body = ["<command>property-toggle</command>", "<property>%s</property>" % b[1]]
+    elif kind == "assign":
+        body = ["<command>property-assign</command>", "<property>%s</property>" % b[1],
+                "<value type=\"bool\">%s</value>" % b[2]]
+    elif kind == "swap":
+        body = ["<command>property-swap</command>", "<property>%s</property>" % b[1], "<property>%s</property>" % b[2]]
+    elif kind == "cmd":
+        body = ["<command>%s</command>" % b[1]]
+    else:
+        raise ValueError(b)
+    return [sp + "<binding>"] + [sp + "  " + x for x in body] + [sp + "</binding>"]
+
+
+def button_xml(fid, code):
+    j = BUTTON_JOBS[fid]
+    lines = ["  <event>", "    <desc>%s</desc>" % escape(j["title"]), "    <name>%s</name>" % key_name(code),
+             "    <repeatable type=\"bool\">%s</repeatable>" % ("true" if j["repeat"] else "false")]
+    for b in j["press"]:
+        lines += binding_xml(b, 4)
+    if j["release"]:
+        lines.append("    <mod-up>")
+        for b in j["release"]:
+            lines += binding_xml(b, 6)
+        lines.append("    </mod-up>")
+    lines.append("  </event>")
+    return lines
+
+
+def _nas_str(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def shaping_nasal(jobs, mapping, slug_name):
+    """Nasal that runs every frame: raw value -> dead zone, curve, sensitivity, limit, offset, smoothing ->
+    the control properties, using the aircraft's own settings when there are some. Writes only on change,
+    so the keyboard and autopilot can still move the controls."""
+    shapes = (mapping.get("shapes") or {})
+    tables = {}
+    for ac in ["default"] + sorted(k for k in shapes if k != "default"):
+        tables[ac] = {j: get_shape(mapping, j, None if ac == "default" else ac) for j in jobs}
+    def row(s, j):
+        return "[%g, %g, %g, %g, %g, %g, %d, %d]" % (s["deadzone"], s["sensitivity"], s["expo"], s["limit"],
+                                                    s["offset"], s["smooth"], 1 if j in STICKS else 0,
+                                                    1 if (s.get("split") and j == "rudder") else 0)
+    tab = ",\n".join("  %s: {%s}" % (_nas_str(ac), ", ".join("%s: %s" % (_nas_str(j), row(s, j)) for j, s in t.items()))
+                     for ac, t in tables.items())
+    outs = ", ".join("%s: [%s]" % (_nas_str(j), ", ".join(_nas_str(p) for p in AXIS_JOBS[j]["props"])) for j in jobs)
+    g = "fgfs_mga_loop_" + re.sub(r"[^A-Za-z0-9]", "_", slug_name)
+    return """
+var shapes = {
+%s
+};
+var outs = {%s};
+var last = {};
+var smooth = {};
+var clamp = func(v, a, b) { return v < a ? a : (v > b ? b : v); };
+var shape = func(x, p) {
+  var a = p[6] ? math.abs(x) : clamp(x, 0, 1);
+  a = a <= p[0] ? 0 : (a - p[0]) / (1 - p[0]);
+  a = (1 - p[2]) * a + p[2] * a * a * a;
+  a = math.min(a * p[1], p[3]);
+  var y = p[6] ? (x < 0 ? -a : a) : a;
+  y = y + p[4];
+  return p[6] ? clamp(y, -1, 1) : clamp(y, 0, 1);
+};
+var loop = func {
+  var ac = getprop("/sim/aircraft") or "";
+  var tab = contains(shapes, ac) ? shapes[ac] : shapes["default"];
+  foreach (var j; keys(outs)) {
+    var raw = getprop("%s" ~ j);
+    if (raw == nil) continue;
+    var p = contains(tab, j) ? tab[j] : shapes["default"][j];
+    var y = shape(raw, p);
+    if (p[5] > 0 and contains(smooth, j)) y = smooth[j] + (1 - p[5]) * (y - smooth[j]);
+    smooth[j] = y;
+    if (!contains(last, j) or math.abs(y - last[j]) > 0.0002) {
+      last[j] = y;
+      foreach (var prop; outs[j]) setprop(prop, y);
+    }
+    if (p[7] and getprop("%s")) {
+      setprop("/controls/gear/brake-left", clamp(1 - y, 0, 1));
+      setprop("/controls/gear/brake-right", clamp(1 + y, 0, 1));
+    }
+  }
+};
+if (contains(globals, "%s")) globals["%s"].stop();
+globals["%s"] = maketimer(0, loop);
+globals["%s"].start();
+""" % (tab, outs, RAW, HOLD_PROP, g, g, g, g)
+
+
+def device_xml(d, mapping):
+    k = dev_key(d)
+    head = ["<?xml version=\"1.0\"?>", "<!--", "  Written by fgfs-mga controls on %s." % time.strftime("%Y-%m-%d %H:%M"),
+            "  %s (usb %04x:%04x). Change it with 'fgfs-mga controls gui'." % (escape(d.name), d.info.vendor, d.info.product)]
+    body, axis_jobs = [], []
+    for fid in AXIS_JOBS:
+        a = mapping["axes"].get(fid)
+        if a and a["dev"] == k:
+            head.append("  %-18s %s%s%s" % (fid, PLAIN.get(a["code"], abs_name(a["code"])), " (reversed)" if a["dir"] < 0 else "",
+                                            ", calibrated" if a.get("cal") else ""))
+            body += axis_xml(fid, a)
+            axis_jobs.append(fid)
+    h = mapping.get("hat") or {}
+    if h.get("dev") == k:
+        head.append("  hat                glance around while held")
+        for c in h["codes"]:
+            body += hat_xml(c)
+    for fid in BUTTON_JOBS:
+        b = mapping["buttons"].get(fid)
+        if b and b["dev"] == k:
+            head.append("  %-24s %s" % (key_name(b["code"]).replace("button-", "button "), escape(BUTTON_JOBS[fid]["title"])))
+            body += button_xml(fid, b["code"])
+    if not body:
+        return None
+    head += ["-->", "<PropertyList>", "  <name>%s</name>" % escape(d.name),
+             "  <debug-events type=\"bool\">false</debug-events>", "  <grab type=\"bool\">false</grab>"]
+    if axis_jobs:
+        head += ["  <nasal>", "    <open><![CDATA[" + shaping_nasal(axis_jobs, mapping, slug(d.name)) + "]]></open>",
+                 "  </nasal>"]
+    xml = "\n".join(head + body + ["</PropertyList>", ""])
+    ET.fromstring(xml.split("?>", 1)[1])   # refuse to write broken XML
+    return xml
+
+
+def old_configs_for(name):
+    hits = []
+    for root, _dirs, files in os.walk(EVENT_DIR):
+        for f in files:
+            p = os.path.join(root, f)
+            try:
+                txt = open(p, errors="replace").read()
+            except OSError:
+                continue
+            names = re.findall(r"<name>([^<]*)</name>", txt.split("<event>", 1)[0])
+            if any(n.strip().lower() == name.lower() for n in names):
+                hits.append(p)
+    return hits
+
+
+def write_all(devs, mapping, dry):
+    outs, empty = [], []
+    for d in devs:
+        xml = device_xml(d, mapping)
+        if xml:
+            outs.append((d, os.path.join(OUT_DIR, "fgfs-mga-%s.xml" % slug(d.name)), xml))
+        else:
+            empty.append(d)
+    if not outs and not empty:
+        print("Nothing mapped, nothing written.")
+        return 1
+    if dry:
+        for _d, p, x in outs:
+            print("==== would write %s\n%s" % (p, x))
+        return 0
+    bk = os.path.join(SHARE, "backup-%s" % time.strftime("%Y%m%d-%H%M%S"), "input-event")
+    moved = 0
+    for d in [o[0] for o in outs] + empty:
+        for old in old_configs_for(d.name):
+            rel = os.path.relpath(old, EVENT_DIR)
+            dst = os.path.join(bk, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(old, dst)
+            moved += 1
+    os.makedirs(OUT_DIR, exist_ok=True)
+    for d, p, x in outs:
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(x)
+        os.replace(tmp, p)
+        print("Wrote %s" % p)
+    os.makedirs(os.path.dirname(MAP_FILE), exist_ok=True)
+    with open(MAP_FILE, "w") as f:
+        json.dump(mapping, f, indent=1)
+    if moved:
+        print("Moved %d older config file(s) for these controllers to %s" % (moved, bk))
+    print("\nFlightGear reads these at start. fgfs-mga turns on event input for you.")
+    return cmd_show([])
+
+
+def duplicates(mapping):
+    """[(device, code, [jobs])] for any button or axis that more than one job uses on the same device."""
+    seen = {}
+    for part in ("axes", "buttons"):
+        for job, v in (mapping.get(part) or {}).items():
+            seen.setdefault((v["dev"], part, v["code"]), []).append(job)
+    return [(k[0], k[2], jobs) for k, jobs in seen.items() if len(jobs) > 1]
+
+
+def cmd_show(_args):
+    m = load_map()
+    if not m:
+        print("No mapping yet. Run: fgfs-mga controls gui  (or: fgfs-mga controls wizard)")
+        return 1
+    print("Current controls (%s):" % MAP_FILE)
+    for group in GROUPS:
+        rows = []
+        for fid in [j for j, v in JOBS.items() if v["group"] == group]:
+            if fid in AXIS_JOBS and fid in m["axes"]:
+                a = m["axes"][fid]
+                rows.append("  %-36s %s on %s%s" % (job_title(fid), PLAIN.get(a["code"], abs_name(a["code"])),
+                                                    a["dev"][10:], "  (reversed)" if a["dir"] < 0 else ""))
+            elif fid == "hat" and (m.get("hat") or {}).get("dev"):
+                rows.append("  %-36s hat on %s" % (job_title(fid), m["hat"]["dev"][10:]))
+            elif fid in BUTTON_JOBS and fid in m["buttons"]:
+                b = m["buttons"][fid]
+                rows.append("  %-36s %s on %s" % (job_title(fid), key_name(b["code"]).replace("button-", "button "),
+                                                  b["dev"][10:]))
+        if rows:
+            print(group + ":")
+            print("\n".join(rows))
+    free = [j for j in CORE if j not in m["axes"] and j not in m["buttons"]]
+    if free:
+        print("Not bound yet: " + ", ".join(job_title(j) for j in free))
+    for dev, code, jobs in duplicates(m):
+        print("Warning: %s on %s does several jobs: %s" % (key_name(code), dev[10:], ", ".join(jobs)))
+    return 0
+
+
+def cmd_test(args):
+    m = load_map()
+    devs = find_devices("--all" in args)
+    if not m or not devs:
+        print("Need a mapping and the controllers plugged in.")
+        return 1
+    bykey = {dev_key(d): d for d in devs}
+    rev = {}
+    for fid, a in m["axes"].items():
+        if a["dev"] in bykey:
+            rev[(bykey[a["dev"]].path, a["code"])] = fid
+    btn = {(bykey[b["dev"]].path, b["code"]): fid for fid, b in m["buttons"].items() if b["dev"] in bykey}
+    print("Move the controls; this shows what FlightGear will get. Ctrl+C to stop.")
+    vals = {}
+    try:
+        while True:
+            r, _w, _x = select.select(devs, [], [], 0.5)
+            for d in r:
+                for ev in d.read():
+                    if ev.type == EV_ABS and (d.path, ev.code) in rev:
+                        fid = rev[(d.path, ev.code)]
+                        vals[fid] = fg_value(fid, m["axes"][fid], norm(d, ev.code, ev.value), get_shape(m, fid))
+                    elif ev.type == EV_KEY and ev.value == 1:
+                        print("\n  pressed %s -> %s" % (KEY_NAMES.get(ev.code, ev.code),
+                                                       btn.get((d.path, ev.code), "not mapped")))
+            line = "  ".join("%s %+.2f" % (k, vals[k]) for k in sorted(vals))
+            print("\r" + line + " " * 8, end="", flush=True)
+    except KeyboardInterrupt:
+        print()
+    return 0
+
+
+def ffb_module():
+    """The fgfs-mga-ffb tool next to this one (installed side by side), or None."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for path in (os.path.join(here, "fgfs-mga-ffb"), os.path.join(SHARE, "tools", "fgfs-mga-ffb")):
+        if os.path.exists(path):
+            try:
+                from importlib.machinery import SourceFileLoader
+                return SourceFileLoader("fgfs_mga_ffb", path).load_module(), path
+            except Exception:  # a broken copy shouldn't take the controls window down
+                return None, path
+    return None, None
+
+
+# ------------------------------------------------------------------ GUI
+class Session:
+    """Everything the GUI does, without the widgets, so it can be tested with fake sticks.
+
+    Axis values are kept normalised 0..1. Every axis's lowest and highest reading since the
+    window opened is tracked, so moving each control end to end once calibrates it.
+    `aircraft` is the aircraft the response settings are edited for (None = all aircraft)."""
+
+    def __init__(self, devs, mapping, aircraft_dirs=None):
+        self.devs = devs
+        self.names = {d.path: d for d in devs}
+        self.path_of = {dev_key(d): d.path for d in devs}
+        self.mapping = mapping if mapping else {"axes": {}, "buttons": {}, "hat": {}}
+        self.mapping.setdefault("hat", {})
+        self.mapping.setdefault("shapes", {})
+        self.values, self.lo, self.hi, self.pressed = {}, {}, {}, set()
+        for d in devs:
+            for code, _n, _a, _b, v in describe(d)[0]:
+                self.values[(d.path, code)] = norm(d, code, v)
+        self.capture = None          # (job, starting values)
+        self.dirty = False
+        self.aircraft = None         # response settings target; None = all aircraft
+        self.aircraft_dirs = aircraft_dirs
+        self._ac_text = None
+        self.message = "Move every stick, twist and lever end to end once (that calibrates them), then Bind any job."
+
+    # --- aircraft and support marks
+    def set_aircraft(self, aircraft, folder=None):
+        self.aircraft = aircraft or None
+        self._ac_text = aircraft_text(folder) if (aircraft and folder) else None
+
+    def support(self, job):
+        return supported(job, self._ac_text)
+
+    # --- reading the sticks
+    def poll(self):
+        try:
+            ready, _w, _x = select.select(self.devs, [], [], 0)
+        except (OSError, ValueError):
+            return
+        for d in ready:
+            try:
+                for ev in d.read():
+                    self.handle(d, ev)
+            except (BlockingIOError, OSError):
+                pass
+
+    def handle(self, d, ev):
+        k = (d.path, ev.code)
+        if ev.type == EV_ABS:
+            n = norm(d, ev.code, ev.value)
+            self.values[k] = n
+            if ev.code not in HAT_CODES:
+                self.lo[k] = min(self.lo.get(k, n), n)
+                self.hi[k] = max(self.hi.get(k, n), n)
+            self._check_axis(d, k, n, ev)
+        elif ev.type == EV_KEY:
+            if ev.value:
+                self.pressed.add(k)
+                self._check_button(d, k)
+            else:
+                self.pressed.discard(k)
+
+    # --- binding
+    def start_capture(self, job):
+        self.capture = (job, dict(self.values))
+        if job in BUTTON_JOBS:
+            hint = "press the button you want"
+        elif job == "hat":
+            hint = HAT_JOB["hint"]
+        elif AXIS_JOBS[job]["kind"] == "bi":
+            hint = AXIS_JOBS[job]["hint"]
+        else:
+            hint = "move it from %s to %s" % AXIS_JOBS[job]["hint"]
+        self.message = "%s: %s (Cancel bind to stop)." % (job_title(job), hint)
+
+    def cancel_capture(self):
+        self.capture = None
+        self.message = "Cancelled."
+
+    def _part(self, job):
+        return "hat" if job == "hat" else ("axes" if job in AXIS_JOBS else "buttons")
+
+    def _users(self, part, k, job):
+        return [j for j, v in self.mapping[part].items()
+                if j != job and v.get("dev") in self.path_of and (self.path_of[v["dev"]], v["code"]) == k]
+
+    def _check_axis(self, d, k, n, ev):
+        if not self.capture:
+            return
+        job, base = self.capture
+        if job == "hat":
+            if ev.code in HAT_CODES and ev.value != 0:
+                self.mapping["hat"] = {"dev": dev_key(d), "codes": hat_codes(d)}
+                self._bound("Glance: hat on %s" % d.name)
+            return
+        if job not in AXIS_JOBS or ev.code in HAT_CODES or self._users("axes", k, job):
+            return     # an axis another job uses is ignored, so a stick nudged while binding isn't stolen
+        move = n - base.get(k, n)
+        if abs(move) < (0.12 if job == "rudder" else 0.3):
+            return
+        stick = job in STICKS
+        centre = {k: base[k]} if stick and k in base else {}
+        self.mapping["axes"][job] = {"dev": dev_key(d), "code": ev.code, "dir": 1 if move > 0 else -1,
+                                     "cal": cal_for(k, self.lo, self.hi, centre), "centre": base.get(k)}
+        self._bound("%s: %s on %s" % (job_title(job), PLAIN.get(ev.code, abs_name(ev.code)), d.name))
+
+    def _check_button(self, d, k):
+        if not self.capture or self.capture[0] not in BUTTON_JOBS:
+            return
+        job = self.capture[0]
+        was = self._users("buttons", k, job)
+        for j in was:      # one button, one job on this stick: the old job lets go of it
+            self.mapping["buttons"].pop(j, None)
+        self.mapping["buttons"][job] = {"dev": dev_key(d), "code": k[1]}
+        text = "%s: %s on %s" % (job_title(job), key_name(k[1]).replace("button-", "button "), d.name)
+        if was:
+            text += ". That button was %s, which is free now" % " and ".join(job_title(j) for j in was)
+        self._bound(text)
+
+    def _bound(self, text):
+        self.capture = None
+        self.dirty = True
+        self.message = text + ". Save when you're done."
+
+    def reverse(self, job):
+        a = self.mapping["axes"].get(job)
+        if a:
+            a["dir"] = -a["dir"]
+            self.dirty = True
+
+    def clear(self, job):
+        if job == "hat":
+            self.mapping["hat"] = {}
+        else:
+            self.mapping[self._part(job)].pop(job, None)
+        self.dirty = True
+
+    # --- response settings
+    def shape(self, job):
+        return get_shape(self.mapping, job, self.aircraft)
+
+    def set_shape(self, job, key, value):
+        scope = self.aircraft or "default"
+        tab = self.mapping["shapes"].setdefault(scope, {}).setdefault(job, {})
+        if key in SHAPE_RANGE:
+            lo, hi = SHAPE_RANGE[key]
+            value = round(max(lo, min(hi, float(value))), 3)
+        else:
+            value = bool(value)
+        tab[key] = value
+        self.dirty = True
+
+    def reset_shape(self, job):
+        scope = self.aircraft or "default"
+        (self.mapping["shapes"].get(scope) or {}).pop(job, None)
+        self.dirty = True
+
+    def has_own_shape(self, job):
+        return bool(self.aircraft and job in (self.mapping["shapes"].get(self.aircraft) or {}))
+
+    def curve(self, job, n=41):
+        """[(input, output)] across the axis's whole range, for drawing."""
+        s = self.shape(job)
+        xs = [-1 + 2 * i / (n - 1) for i in range(n)] if job in STICKS else [i / (n - 1) for i in range(n)]
+        return [(x, apply_shape(job, x, s)) for x in xs]
+
+    # --- showing
+    def binding_text(self, job):
+        if job == "hat":
+            h = self.mapping.get("hat") or {}
+            return "hat on %s" % h["dev"][10:] if h.get("dev") else "-"
+        v = self.mapping[self._part(job)].get(job)
+        if not v:
+            return "-"
+        dev = v["dev"][10:]
+        if job in AXIS_JOBS:
+            return "%s on %s%s" % (PLAIN.get(v["code"], abs_name(v["code"])), dev, " (rev)" if v["dir"] < 0 else "")
+        return "%s on %s" % (key_name(v["code"]).replace("button-", "button "), dev)
+
+    def raw(self, job):
+        """The calibrated value the XML hands to the shaping (before dead zone, curve...), or None."""
+        a = self.mapping["axes"].get(job)
+        if not a or a["dev"] not in self.path_of:
+            return None
+        k = (self.path_of[a["dev"]], a["code"])
+        return cal_value(job, self._with_cal(job, a), self.values.get(k, 0.5))
+
+    def live(self, job):
+        """What FlightGear would get right now: a number for axes, True/False for buttons."""
+        if job in BUTTON_JOBS:
+            b = self.mapping["buttons"].get(job)
+            return bool(b and b["dev"] in self.path_of and (self.path_of[b["dev"]], b["code"]) in self.pressed)
+        r = self.raw(job)
+        return None if r is None else apply_shape(job, r, self.shape(job))
+
+    def _with_cal(self, job, a):
+        k = (self.path_of[a["dev"]], a["code"])
+        if k in self.lo and self.hi[k] - self.lo[k] >= 0.3:
+            old = a.get("cal")
+            centre = a.get("centre")
+            if centre is None:
+                centre = old[1] if old else (self.lo[k] + self.hi[k]) / 2
+            lo, hi = self.lo[k], self.hi[k]
+            if old:   # a wider range seen before still counts
+                lo, hi = min(lo, old[0]), max(hi, old[2])
+            return dict(a, cal=[round(lo, 4), round(centre, 4), round(hi, 4)])
+        return a
+
+    def problems(self):
+        out = ["%s isn't bound" % job_title(j) for j in CORE if j not in self.mapping["axes"] and j not in self.mapping["buttons"]]
+        out += ["%s on %s does several jobs: %s" % (key_name(c), dev[10:], ", ".join(job_title(j) for j in jobs))
+                for dev, c, jobs in duplicates(self.mapping)]
+        return out
+
+    def save(self, dry=False):
+        for job, a in list(self.mapping["axes"].items()):
+            if a.get("dev") in self.path_of:
+                self.mapping["axes"][job] = self._with_cal(job, a)
+        rc = write_all(self.devs, self.mapping, dry)
+        if rc == 0:
+            self.dirty = False
+            self.message = "Saved. Start FlightGear with fgfs-mga as usual."
+        else:
+            self.message = "Nothing to save yet."
+        return rc
+
+
+def qt_module():
+    """The Qt window (fgfs-mga-controls-qt next to this tool), or (None, reason)."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    for path in (os.path.join(here, "fgfs-mga-controls-qt"), os.path.join(SHARE, "tools", "fgfs-mga-controls-qt")):
+        if os.path.exists(path):
+            try:
+                from importlib.machinery import SourceFileLoader
+                return SourceFileLoader("fgfs_mga_controls_qt", path).load_module(), None
+            except ImportError as e:
+                return None, "Qt for Python isn't installed (%s): sudo apt install python3-pyqt5" % e
+            except Exception as e:  # a broken copy shouldn't stop the controls window opening
+                return None, "the Qt window failed to load (%s)" % e
+    return None, "the Qt window (fgfs-mga-controls-qt) isn't installed"
+
+
+def cmd_gui(args):
+    """The controls window: the Qt one, or the older Tk one with --tk (or when Qt can't load)."""
+    if "--tk" not in args:
+        qt, why = qt_module()
+        if qt is not None:
+            try:
+                return qt.run(sys.modules[__name__], args)
+            except Exception as e:  # noqa: BLE001 - fall back rather than leave the user with nothing
+                why = "the Qt window stopped: %s" % e
+        print("Using the older window: %s." % why)
+    return cmd_gui_tk([a for a in args if a != "--tk"])
+
+
+def cmd_gui_tk(args):
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except ImportError:
+        print("Tkinter is missing: sudo apt install python3-tk  (or use: fgfs-mga controls wizard)")
+        return 1
+    devs = find_devices("--all" in args)
+    if not devs:
+        print("No Saitek controller found. Plug them in and try again.")
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        print("Can't open a window (%s). Run it from the desktop, or use: fgfs-mga controls wizard" % e)
+        return 1
+    root.title("FlightGear controls - fgfs-mga")
+    root.geometry("1180x760")
+    ses = Session(devs, load_map())
+    planes = find_aircraft()
+    style = ttk.Style(root)
+    style.configure("On.TLabel", background="#2e7d32", foreground="white")
+    style.configure("Off.TLabel", background="#dddddd", foreground="#444444")
+    style.configure("No.TLabel", foreground="#9e9e9e")
+    style.configure("Group.TButton", anchor="w", font=("TkDefaultFont", 10, "bold"))
+
+    top = ttk.Frame(root, padding=(8, 6))
+    top.pack(fill="x")
+    ttk.Label(top, text="Aircraft:").pack(side="left")
+    ac_var = tk.StringVar(value="(all aircraft)")
+    ac_box = ttk.Combobox(top, textvariable=ac_var, width=36, state="readonly",
+                          values=["(all aircraft)"] + list(planes))
+    ac_box.pack(side="left", padx=6)
+    ac_note = ttk.Label(top, text="Pick one to mark the jobs it doesn't have and to give it its own response settings.")
+    ac_note.pack(side="left", padx=6)
+
+    def pick_aircraft(_e=None):
+        a = ac_var.get()
+        if a.startswith("("):
+            ses.set_aircraft(None)
+            ac_note.configure(text="Response settings apply to every aircraft (unless one has its own).")
+        else:
+            ses.set_aircraft(a, planes.get(a))
+            ac_note.configure(text="Jobs %s doesn't use are greyed. Response settings changed now apply to it only." % a)
+        refresh_response()
+    ac_box.bind("<<ComboboxSelected>>", pick_aircraft)
+
+    nb = ttk.Notebook(root)
+    nb.pack(fill="both", expand=True, padx=8)
+    tab_bind = ttk.Frame(nb, padding=6)
+    tab_resp = ttk.Frame(nb, padding=6)
+    nb.add(tab_bind, text="Buttons and axes")
+    nb.add(tab_resp, text="Response (sensitivity, curves)")
+    tab_ffb = ttk.Frame(nb, padding=10)
+    nb.add(tab_ffb, text="Force feedback")
+
+    # ---- left: live view of each stick
+    left = ttk.Frame(tab_bind)
+    left.pack(side="left", fill="y")
+    bars, lamps = [], []
+    for d in devs:
+        box = ttk.LabelFrame(left, text=d.name, padding=6)
+        box.pack(fill="x", pady=4)
+        for code, name, _a, _b, _v in describe(d)[0]:
+            row = ttk.Frame(box)
+            row.pack(fill="x")
+            ttk.Label(row, text="%-12s" % PLAIN.get(code, name), width=12).pack(side="left")
+            c = tk.Canvas(row, width=180, height=12, bg="#eeeeee", highlightthickness=0)
+            c.pack(side="left", padx=4, pady=1)
+            bars.append((c, (d.path, code), code in HAT_CODES))
+        grid = ttk.Frame(box)
+        grid.pack(fill="x", pady=(4, 0))
+        for i, (code, name) in enumerate(describe(d)[1]):
+            lab = ttk.Label(grid, text=name.replace("button-", ""), style="Off.TLabel", padding=(3, 1))
+            lab.grid(row=i // 4, column=i % 4, padx=1, pady=1, sticky="ew")
+            lamps.append((lab, (d.path, code)))
+
+    # ---- right: every job, grouped, collapsible, scrollable
+    outer = ttk.Frame(tab_bind)
+    outer.pack(side="left", fill="both", expand=True, padx=(8, 0))
+    canvas = tk.Canvas(outer, highlightthickness=0)
+    sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+    inner = ttk.Frame(canvas)
+    inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=sb.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    sb.pack(side="right", fill="y")
+    for w in (canvas, inner):
+        w.bind_all("<Button-4>", lambda _e: canvas.yview_scroll(-3, "units"))
+        w.bind_all("<Button-5>", lambda _e: canvas.yview_scroll(3, "units"))
+
+    rows, heads, bodies, opened = {}, {}, {}, {}
+    for group in GROUPS:
+        jobs = [j for j, v in JOBS.items() if v["group"] == group]
+        head = ttk.Button(inner, style="Group.TButton", width=60)
+        head.pack(fill="x", pady=(6, 0))
+        body = ttk.Frame(inner)
+        heads[group], bodies[group] = head, body
+        opened[group] = group in ("Flight", "Engine", "Brakes")
+        for r, job in enumerate(jobs):
+            t = ttk.Label(body, text=job_title(job), width=40)
+            t.grid(row=r, column=0, sticky="w", padx=(12, 6))
+            mark = ttk.Label(body, width=14)
+            mark.grid(row=r, column=1, sticky="w")
+            bound = ttk.Label(body, width=30)
+            bound.grid(row=r, column=2, sticky="w")
+            now = ttk.Label(body, width=6)
+            now.grid(row=r, column=3, sticky="w")
+            ttk.Button(body, text="Bind", width=5, command=lambda j=job: ses.start_capture(j)).grid(row=r, column=4)
+            if job in AXIS_JOBS:
+                ttk.Button(body, text="Reverse", width=7, command=lambda j=job: ses.reverse(j)).grid(row=r, column=5)
+            ttk.Button(body, text="Clear", width=5, command=lambda j=job: ses.clear(j)).grid(row=r, column=6)
+            rows[job] = (t, mark, bound, now)
+
+        def toggle(g=group):
+            opened[g] = not opened[g]
+            relayout()
+        head.configure(command=toggle)
+
+    def relayout():
+        for g in GROUPS:
+            bodies[g].pack_forget()
+        for g in GROUPS:
+            heads[g].pack_forget()
+            heads[g].pack(fill="x", pady=(6, 0))
+            if opened[g]:
+                bodies[g].pack(fill="x")
+    relayout()
+
+    # ---- response tab: pick an axis, sliders, live curve
+    rl = ttk.Frame(tab_resp)
+    rl.pack(side="left", fill="y")
+    ttk.Label(rl, text="Axis").pack(anchor="w")
+    axis_list = tk.Listbox(rl, height=20, exportselection=False, width=30)
+    axis_list.pack(fill="y", expand=True)
+    rr = ttk.Frame(tab_resp, padding=(12, 0))
+    rr.pack(side="left", fill="both", expand=True)
+    scope_lab = ttk.Label(rr, font=("TkDefaultFont", 10, "bold"))
+    scope_lab.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+    sliders, slabels = {}, {}
+    cur = {"job": None, "busy": False}
+
+    def on_slide(key, val):
+        if cur["job"] and not cur["busy"]:
+            ses.set_shape(cur["job"], key, float(val))
+            slabels[key].configure(text="%.2f" % float(val))
+    for i, key in enumerate(["deadzone", "sensitivity", "expo", "limit", "offset", "smooth"], start=1):
+        lo, hi = SHAPE_RANGE[key]
+        ttk.Label(rr, text=SHAPE_HELP[key], wraplength=330).grid(row=i, column=0, sticky="w", pady=3)
+        sc = ttk.Scale(rr, from_=lo, to=hi, length=260, command=lambda v, k=key: on_slide(k, v))
+        sc.grid(row=i, column=1, padx=6)
+        lab = ttk.Label(rr, width=6)
+        lab.grid(row=i, column=2, sticky="w")
+        sliders[key], slabels[key] = sc, lab
+    split_var = tk.BooleanVar()
+
+    def on_split():
+        if cur["job"]:
+            ses.set_shape(cur["job"], "split", split_var.get())
+    split_chk = ttk.Checkbutton(rr, text=SHAPE_HELP["split"], variable=split_var, command=on_split)
+    split_chk.grid(row=7, column=0, columnspan=3, sticky="w", pady=4)
+    btns = ttk.Frame(rr)
+    btns.grid(row=8, column=0, columnspan=3, sticky="w", pady=4)
+
+    def reset():
+        if cur["job"]:
+            ses.reset_shape(cur["job"])
+            refresh_response()
+    ttk.Button(btns, text="Reset these settings", command=reset).pack(side="left")
+    ttk.Button(btns, text="Reverse this axis", command=lambda: cur["job"] and ses.reverse(cur["job"])).pack(side="left", padx=6)
+    graph = tk.Canvas(rr, width=300, height=300, bg="#fafafa", highlightthickness=1, highlightbackground="#cccccc")
+    graph.grid(row=1, column=3, rowspan=8, padx=16, sticky="n")
+    ttk.Label(rr, text="Across: stick position.  Up: what FlightGear gets.  Red dot: your stick now.").grid(
+        row=9, column=3, padx=16, sticky="w")
+
+    def axis_jobs():
+        return [j for j in AXIS_JOBS if j in ses.mapping["axes"]]
+
+    def refresh_axis_list():
+        sel = cur["job"]
+        axis_list.delete(0, "end")
+        for j in axis_jobs():
+            axis_list.insert("end", job_title(j))
+        if sel in axis_jobs():
+            axis_list.selection_set(axis_jobs().index(sel))
+
+    def refresh_response():
+        job = cur["job"]
+        scope_lab.configure(text=("Settings for %s%s" % (ses.aircraft, "" if (not job or ses.has_own_shape(job)) else
+                                                          " (now the same as all aircraft; changes make its own copy)"))
+                            if ses.aircraft else "Settings for all aircraft")
+        if not job:
+            return
+        s = ses.shape(job)
+        cur["busy"] = True
+        for key, sc in sliders.items():
+            sc.set(s[key])
+            slabels[key].configure(text="%.2f" % s[key])
+        split_var.set(bool(s.get("split")))
+        split_chk.state(["!disabled"] if job == "rudder" else ["disabled"])
+        cur["busy"] = False
+
+    def on_pick(_e=None):
+        sel = axis_list.curselection()
+        if sel:
+            cur["job"] = axis_jobs()[sel[0]]
+            refresh_response()
+    axis_list.bind("<<ListboxSelect>>", on_pick)
+    refresh_axis_list()
+
+    def draw_graph():
+        graph.delete("all")
+        job = cur["job"]
+        W = 300
+        graph.create_line(0, W / 2, W, W / 2, fill="#dddddd")
+        graph.create_line(W / 2, 0, W / 2, W, fill="#dddddd")
+        if not job:
+            graph.create_text(W / 2, W / 2, text="Pick an axis", fill="#777777")
+            return
+        stick = job in STICKS
+        sx = (lambda x: (x + 1) / 2 * W) if stick else (lambda x: x * W)
+        sy = (lambda y: W - (y + 1) / 2 * W) if stick else (lambda y: W - y * W)
+        graph.create_line(sx(-1 if stick else 0), sy(-1 if stick else 0), sx(1), sy(1), fill="#cfd8dc", dash=(3, 3))
+        pts = ses.curve(job)
+        graph.create_line(*[c for x, y in pts for c in (sx(x), sy(y))], fill="#1565c0", width=2)
+        r = ses.raw(job)
+        if r is not None:
+            y = ses.live(job)
+            graph.create_oval(sx(r) - 5, sy(y) - 5, sx(r) + 5, sy(y) + 5, fill="#d32f2f", outline="")
+            graph.create_text(8, 10, anchor="w", text="in %+.2f  out %+.2f" % (r, y), fill="#333333")
+
+    # ---- force feedback tab: strengths for fgfs-mga-ffb (applies in flight within a second of Save)
+    ffbm, ffb_path = ffb_module()
+    ffb_state = {"dirty": False}
+    if ffbm is None:
+        ttk.Label(tab_ffb, text="The force feedback bridge (fgfs-mga-ffb) isn't installed next to this tool.").pack(anchor="w")
+    else:
+        fconf = ffbm.load_conf()
+        en_var = tk.BooleanVar(value=fconf["enabled"])
+
+        def fmark(*_a):
+            ffb_state["dirty"] = True
+            ffb_note.configure(text="* not saved yet")
+        ttk.Checkbutton(tab_ffb, text="Force feedback on (Saitek Cyborg Evo Force)", variable=en_var,
+                        command=fmark).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        fvars = {}
+        for i, key in enumerate(["master", "spring", "buffet", "rumble", "vref_kt", "buffet_alpha", "trim_follow"], start=1):
+            lo, hi = ffbm.RANGE[key]
+            ttk.Label(tab_ffb, text=ffbm.HELP[key], width=52).grid(row=i, column=0, sticky="w", pady=3)
+            v = tk.DoubleVar(value=fconf[key])
+            lab = ttk.Label(tab_ffb, width=6, text="%g" % round(fconf[key], 1))
+
+            def moved(val, k=key, lab=lab):
+                lab.configure(text="%g" % round(float(val), 1))
+                fmark()
+            ttk.Scale(tab_ffb, from_=lo, to=hi, length=300, variable=v, command=moved).grid(row=i, column=1, padx=6)
+            lab.grid(row=i, column=2, sticky="w")
+            fvars[key] = v
+
+        def fcollect():
+            c = {k: round(v.get(), 1) for k, v in fvars.items()}
+            c["enabled"] = en_var.get()
+            return c
+
+        def fsave():
+            ffbm.save_conf(dict(ffbm.load_conf(), **fcollect()))
+            ffb_state["dirty"] = False
+            ffb_note.configure(text="Saved. A running flight picks it up within a second.")
+
+        def fdefaults():
+            for k, v in fvars.items():
+                v.set(ffbm.DEFAULTS[k])
+            en_var.set(True)
+            fmark()
+
+        def ftest():
+            fsave()
+            import subprocess
+            try:
+                subprocess.Popen([sys.executable, ffb_path, "test"])
+                ffb_note.configure(text="Playing spring, buffet and rumble for 2 s each. Hold the stick loosely.")
+            except OSError as e:
+                ffb_note.configure(text="Couldn't start the test: %s" % e)
+        row = ttk.Frame(tab_ffb)
+        row.grid(row=9, column=0, columnspan=3, sticky="w", pady=(10, 4))
+        ttk.Button(row, text="Save", command=fsave).pack(side="left")
+        ttk.Button(row, text="Test on the stick", command=ftest).pack(side="left", padx=6)
+        ttk.Button(row, text="Moderate defaults", command=fdefaults).pack(side="left")
+        ffb_note = ttk.Label(tab_ffb, text="fgfs-mga turns it on by itself when the Evo's force feedback driver is loaded. "
+                             "For one flight: fgfs-mga --ffb or --no-ffb.",
+                             wraplength=640)
+        ffb_note.grid(row=10, column=0, columnspan=3, sticky="w")
+
+    # ---- bottom
+    bottom = ttk.Frame(root, padding=8)
+    bottom.pack(fill="x")
+    status = ttk.Label(bottom, wraplength=900)
+    status.pack(side="left", fill="x", expand=True)
+
+    def close():
+        if (ses.dirty or ffb_state["dirty"]) and not messagebox.askyesno("Unsaved changes", "Close without saving?"):
+            return
+        root.destroy()
+
+    def save():
+        ses.save("--dry-run" in args)
+        warn = ses.problems()
+        if warn:
+            ses.message += "  Check: " + "; ".join(warn) + "."
+    ttk.Button(bottom, text="Cancel bind", command=ses.cancel_capture).pack(side="right", padx=2)
+    ttk.Button(bottom, text="Close", command=close).pack(side="right", padx=2)
+    ttk.Button(bottom, text="Save", command=save).pack(side="right", padx=2)
+    root.protocol("WM_DELETE_WINDOW", close)
+
+    seen_axes = {"n": -1}
+
+    def tick():
+        ses.poll()
+        for c, k, hat in bars:
+            v = ses.values.get(k, 0.5)
+            c.delete("all")
+            if k in ses.lo and not hat:
+                c.create_rectangle(ses.lo[k] * 180, 0, ses.hi[k] * 180, 12, fill="#c8e6c9", width=0)
+            c.create_rectangle(v * 180 - 3, 0, v * 180 + 3, 12, fill="#1565c0", width=0)
+            c.create_line(90, 0, 90, 12, fill="#999999")
+        for lab, k in lamps:
+            lab.configure(style="On.TLabel" if k in ses.pressed else "Off.TLabel")
+        counts = {}
+        for job, (t, mark, bound, now) in rows.items():
+            sup = ses.support(job)
+            mark.configure(text="" if sup is None else ("" if sup else "not on this aircraft"), style="No.TLabel")
+            t.configure(style="No.TLabel" if sup is False else "TLabel")
+            b = ses.binding_text(job)
+            bound.configure(text=b)
+            if b != "-":
+                counts[JOBS[job]["group"]] = counts.get(JOBS[job]["group"], 0) + 1
+            v = None if job == "hat" else ses.live(job)
+            now.configure(text=("ON" if v else "") if isinstance(v, bool) else ("%+.2f" % v if v is not None else ""))
+        for g in GROUPS:
+            heads[g].configure(text="%s %s   (%d bound)" % ("▾" if opened[g] else "▸", g, counts.get(g, 0)))
+        if len(axis_jobs()) != seen_axes["n"]:
+            seen_axes["n"] = len(axis_jobs())
+            refresh_axis_list()
+        draw_graph()
+        status.configure(text=("* " if ses.dirty else "") + ses.message)
+        root.after(40, tick)
+    tick()
+    close_after = os.environ.get("FGFS_MGA_GUI_AUTOCLOSE")
+    if close_after:   # smoke test: open, run, close
+        root.after(int(float(close_after) * 1000), root.destroy)
+    root.mainloop()
+    return 0
+
+
+def cmd_bind(args, unbind=False):
+    jobs = [a for a in args if not a.startswith("-")]
+    bad = [j for j in jobs if j not in JOBS]
+    if not jobs or bad:
+        print("Which job? One or more of:")
+        for g in GROUPS:
+            print("  %-15s %s" % (g + ":", " ".join(j for j, v in JOBS.items() if v["group"] == g)))
+        return 2
+    m = load_map()
+    devs = find_devices("--all" in args)
+    if not m:
+        print("No mapping yet. Run: fgfs-mga controls gui  (or: fgfs-mga controls wizard)")
+        return 1
+    if not devs:
+        print("No Saitek controller found. Plug them in and try again.")
+        return 1
+    m.setdefault("hat", {})
+    names = {d.path: d for d in devs}
+    path_of = {dev_key(d): d.path for d in devs}
+    prompts = {a[0]: a[2] for a in AXES}
+    for fid in jobs:
+        if unbind:
+            if fid == "hat":
+                m["hat"] = {}
+            else:
+                m["axes" if fid in AXIS_JOBS else "buttons"].pop(fid, None)
+            print("  %s cleared" % job_title(fid))
+            continue
+        if fid in BUTTON_JOBS:
+            print("Press the button for %s (Enter = leave it free) ... " % job_title(fid), end="", flush=True)
+            k = wait_button(devs, set(), timeout=60)
+            if k is None:
+                m["buttons"].pop(fid, None)
+                print("free")
+                continue
+            for j, b in list(m["buttons"].items()):   # one button, one job on a stick
+                if j != fid and b["dev"] in path_of and (path_of[b["dev"]], b["code"]) == k:
+                    m["buttons"].pop(j)
+                    print("  (that button was %s; that job is free now)" % job_title(j))
+            m["buttons"][fid] = {"dev": dev_key(names[k[0]]), "code": k[1]}
+            print("%s on %s" % (key_name(k[1]).replace("button-", ""), names[k[0]].name))
+        elif fid == "hat":
+            d = next((x for x in devs if ask("Use the hat on %s to glance around? [y/N] " % x.name) == "y"), None)
+            m["hat"] = {"dev": dev_key(d), "codes": hat_codes(d)} if d else {}
+        else:
+            stick = fid in STICKS
+            used = {(path_of[a["dev"]], a["code"]) for j, a in m["axes"].items() if j != fid and a["dev"] in path_of}
+            print("Move that control end to end two or three times, then press Enter.")
+            cal_lo, cal_hi = calibrate(devs)
+            if stick:
+                if ask("Let go of it (centred) and press Enter ") == "q":
+                    return 1
+                centre = snapshot(devs)
+                prompt = prompts.get(fid) or "%s: %s" % (job_title(fid), AXIS_JOBS[fid]["hint"])
+                if ask("%s, press Enter " % prompt) == "q":
+                    return 1
+                k, direction = pick_axis(devs, centre, snapshot(devs), used, min_move=0.12 if fid == "rudder" else 0.2)
+            else:
+                end_lo, end_hi = UNI_ENDS[fid]
+                if ask("%s: set it to %s, press Enter " % (job_title(fid), end_lo)) == "q":
+                    return 1
+                centre = snapshot(devs)
+                if ask("  now move it to %s, press Enter " % end_hi) == "q":
+                    return 1
+                k, direction = pick_axis(devs, centre, snapshot(devs), used)
+                centre = {}
+            if k is None:
+                print("  didn't see anything move far enough; %s left as it was" % fid)
+                continue
+            m["axes"][fid] = {"dev": dev_key(names[k[0]]), "code": k[1], "dir": direction,
+                              "cal": cal_for(k, cal_lo, cal_hi, centre)}
+            print("  -> %s on %s" % (PLAIN.get(k[1], abs_name(k[1])), names[k[0]].name))
+    return write_all(devs, m, "--dry-run" in args)
+
+
+def stick_health(devs):
+    """Warnings for sticks that are plugged in but can't work: X and Y both parked at their minimum, which a
+    centred stick never reports (the stick isn't sending movement). Dead copies left by a driver reload are
+    skipped by find_devices: FlightGear gives every copy the same bindings, so they don't affect flying."""
+    out, seen = [], {}
+    for d in devs:
+        if not is_dead_copy(getattr(d, "path", "")):
+            seen.setdefault(dev_key(d), []).append(d)
+    for key, ds in sorted(seen.items()):
+        name = key[10:]
+        for d in ds:
+            try:
+                ai = dict(d.capabilities(absinfo=True).get(EV_ABS, []))
+            except OSError:
+                continue
+            x, y = ai.get(0), ai.get(1)                      # ABS_X, ABS_Y
+            if x and y and x.max > x.min and y.max > y.min and x.value == x.min and y.value == y.min:
+                out.append("%s isn't sending any movement (X and Y read their minimum). Unplug it and plug it"
+                           " back in; if that doesn't help, its force feedback driver is blocking input." % name)
+    return out
+
+
+def cmd_check(args):
+    """Before a flight: are the mapped sticks plugged in, and are the core jobs bound? Exit 0 = fine, 3 = warnings.
+    --gui shows a small window with 'Open controls' and 'Fly anyway' (goes on by itself after 20 s)."""
+    m = load_map()
+    warn = []
+    if not m:
+        warn.append("The joysticks aren't set up for FlightGear yet.")
+    else:
+        devs = find_devices(True)
+        present = {dev_key(d) for d in devs}
+        warn += stick_health(devs)
+        want = {v["dev"] for part in ("axes", "buttons") for v in m.get(part, {}).values()}
+        if (m.get("hat") or {}).get("dev"):
+            want.add(m["hat"]["dev"])
+        for dev in sorted(want - present):
+            warn.append("%s isn't plugged in." % dev[10:])
+        free = [job_title(j) for j in CORE if j not in m.get("axes", {}) and j not in m.get("buttons", {})]
+        if free:
+            warn.append("Not bound: %s." % ", ".join(free))
+        for dev, code, jobs in duplicates(m):
+            warn.append("%s on %s does several jobs (%s)." % (key_name(code), dev[10:], ", ".join(job_title(j) for j in jobs)))
+    if not warn:
+        return 0
+    if "--quiet" not in args or "--gui" not in args:
+        print("Controls check:\n  " + "\n  ".join(warn))
+    if "--gui" not in args or not os.environ.get("DISPLAY"):
+        return 3
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        root = tk.Tk()
+    except Exception:
+        return 3
+    root.title("Before you fly")
+    choice = {"v": "fly"}
+    ttk.Label(root, text="Controls check", font=("TkDefaultFont", 12, "bold"), padding=(12, 10, 12, 2)).pack(anchor="w")
+    ttk.Label(root, text="\n".join(warn), padding=(12, 4), wraplength=460, justify="left").pack(anchor="w")
+    left = {"n": 20}
+    note = ttk.Label(root, padding=(12, 2))
+    note.pack(anchor="w")
+    row = ttk.Frame(root, padding=10)
+    row.pack(anchor="e")
+
+    def go(v):
+        choice["v"] = v
+        root.destroy()
+    ttk.Button(row, text="Open controls", command=lambda: go("gui")).pack(side="left", padx=4)
+    ttk.Button(row, text="Fly anyway", command=lambda: go("fly")).pack(side="left", padx=4)
+
+    def count():
+        note.configure(text="FlightGear starts by itself in %d s." % left["n"])
+        left["n"] -= 1
+        if left["n"] < 0:
+            go("fly")
+        else:
+            root.after(1000, count)
+    count()
+    root.mainloop()
+    if choice["v"] == "gui":
+        cmd_gui([a for a in args if a == "--all"])
+    return 3
+
+
+def main(argv):
+    cmd = argv[0] if argv and not argv[0].startswith("-") else "wizard"
+    rest = argv[1:] if argv and not argv[0].startswith("-") else argv
+    fn = {"scan": cmd_scan, "wizard": cmd_wizard, "defaults": cmd_defaults, "test": cmd_test,
+          "show": cmd_show, "gui": cmd_gui, "gui-tk": cmd_gui_tk, "bind": cmd_bind, "unbind": lambda a: cmd_bind(a, unbind=True),
+          "check": cmd_check}.get(cmd)
+    if fn is None or "-h" in rest or "--help" in rest:
+        print(__doc__)
+        return 0 if fn else 2
+    return fn(rest)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

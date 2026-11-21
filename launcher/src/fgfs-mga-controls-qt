@@ -1,0 +1,1178 @@
+#!/usr/bin/env python3
+"""fgfs-mga controls window (Qt). Opened by `fgfs-mga controls gui`; the older Tk window is `gui-tk`.
+
+All the binding, calibration and response logic lives in fgfs-mga-controls (class Session); this file is
+only the window. Works with PySide6, PyQt5 or PySide2, whichever is installed (Debian: python3-pyqt5).
+"""
+import os
+import sys
+
+QT = None
+for _name in ("PySide6", "PyQt5", "PySide2"):
+    try:
+        if _name == "PySide6":
+            from PySide6 import QtCore, QtGui, QtWidgets
+        elif _name == "PyQt5":
+            from PyQt5 import QtCore, QtGui, QtWidgets
+        else:
+            from PySide2 import QtCore, QtGui, QtWidgets
+        QT = _name
+        break
+    except ImportError:
+        continue
+if QT is None:
+    raise ImportError("no Qt for Python (install python3-pyqt5)")
+
+Qt = QtCore.Qt
+Signal = getattr(QtCore, "pyqtSignal", None) or QtCore.Signal
+
+# ---------------------------------------------------------------- look
+C = {"bg": "#12151a", "panel": "#1b2027", "card": "#222831", "card2": "#2a313c", "line": "#343c48",
+     "text": "#e6e9ee", "dim": "#8b95a5", "faint": "#5b6574", "accent": "#4c9bff", "accent2": "#2f6fd1",
+     "ok": "#3ccf7a", "warn": "#f5b340", "bad": "#ef5b5b", "curve": "#4c9bff", "dot": "#ff6b6b"}
+
+QSS = """
+* { color: %(text)s; font-size: 11pt; }
+QMainWindow, QWidget#root { background: %(bg)s; }
+QFrame#topbar { background: %(panel)s; border-bottom: 1px solid %(line)s; }
+QLabel#title { font-size: 15pt; font-weight: 600; }
+QLabel#dim, QLabel.dim { color: %(dim)s; }
+QLabel#scope { color: %(dim)s; }
+QLabel#h2 { font-size: 13pt; font-weight: 600; }
+QFrame#card, QFrame#axiscard { background: %(card)s; border: 1px solid %(line)s; border-radius: 10px; }
+QFrame#axiscard:hover { border-color: %(faint)s; }
+QFrame#axiscard[selected="true"] { border: 2px solid %(accent)s; background: %(card2)s; }
+QTabWidget::pane { border: none; }
+QTabBar::tab { background: transparent; color: %(dim)s; padding: 10px 22px; margin-right: 4px;
+               border-bottom: 3px solid transparent; }
+QTabBar::tab:selected { color: %(text)s; border-bottom: 3px solid %(accent)s; }
+QTabBar::tab:hover { color: %(text)s; }
+QPushButton { background: %(card2)s; border: 1px solid %(line)s; border-radius: 8px; padding: 7px 14px; }
+QPushButton:hover { border-color: %(faint)s; background: #313948; }
+QPushButton:pressed { background: #252b34; }
+QPushButton:disabled { color: %(faint)s; }
+QPushButton#primary { background: %(accent2)s; border-color: %(accent)s; font-weight: 600; }
+QPushButton#primary:hover { background: %(accent)s; }
+QPushButton#assign { border-color: %(accent)s; }
+QPushButton#danger:hover { border-color: %(bad)s; }
+QComboBox, QLineEdit, QDoubleSpinBox { background: %(card)s; border: 1px solid %(line)s; border-radius: 7px;
+               padding: 5px 9px; min-height: 22px; }
+QComboBox:hover, QLineEdit:focus, QDoubleSpinBox:focus { border-color: %(accent)s; }
+QComboBox QAbstractItemView { background: %(card)s; selection-background-color: %(accent2)s; border: 1px solid %(line)s; }
+QSlider::groove:horizontal { height: 6px; background: %(line)s; border-radius: 3px; }
+QSlider::sub-page:horizontal { background: %(accent)s; border-radius: 3px; }
+QSlider::handle:horizontal { background: %(text)s; width: 16px; height: 16px; margin: -6px 0; border-radius: 8px; }
+QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 1px solid %(faint)s; background: %(card)s; }
+QCheckBox::indicator:checked { background: %(accent)s; border-color: %(accent)s; }
+QTreeWidget { background: %(card)s; border: 1px solid %(line)s; border-radius: 10px; alternate-background-color: #252c36; }
+QTreeWidget::item { padding: 5px 4px; }
+QTreeWidget::item:selected { background: %(accent2)s; }
+QHeaderView::section { background: %(panel)s; color: %(dim)s; border: none; padding: 7px; font-weight: 600; }
+QScrollArea { border: none; background: transparent; }
+QScrollBar:vertical { background: transparent; width: 10px; }
+QScrollBar::handle:vertical { background: %(line)s; border-radius: 5px; min-height: 30px; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
+QFrame#status { background: %(panel)s; border-top: 1px solid %(line)s; }
+QFrame#status[capture="true"] { background: #3a2e12; border-top: 2px solid %(warn)s; }
+QLabel#statustext { font-size: 12pt; }
+QToolTip { background: %(card2)s; color: %(text)s; border: 1px solid %(line)s; padding: 6px; }
+""" % C
+
+
+def qcolor(name):
+    return QtGui.QColor(C.get(name, name))
+
+
+def label(text="", obj=None, wrap=False):
+    w = QtWidgets.QLabel(text)
+    if obj:
+        w.setObjectName(obj)
+    w.setWordWrap(wrap)
+    return w
+
+
+def button(text, slot=None, obj=None, tip=None):
+    b = QtWidgets.QPushButton(text)
+    if obj:
+        b.setObjectName(obj)
+    if slot:
+        b.clicked.connect(slot)
+    if tip:
+        b.setToolTip(tip)
+    b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
+def card():
+    f = QtWidgets.QFrame()
+    f.setObjectName("card")
+    return f
+
+
+# ---------------------------------------------------------------- widgets
+class Meter(QtWidgets.QWidget):
+    """A bar for one value. bi=True: -1..1 filled from the centre; else 0..1 from the left.
+    lo/hi (0..1, raw) draw the range seen so far, for calibration."""
+
+    def __init__(self, bi=False, height=16, parent=None):
+        super().__init__(parent)
+        self.bi, self.value, self.lo, self.hi, self.marker = bi, None, None, None, None
+        self.setMinimumHeight(height)
+        self.setMinimumWidth(80)
+
+    def set(self, value, lo=None, hi=None, marker=None):
+        if (value, lo, hi, marker) != (self.value, self.lo, self.hi, self.marker):
+            self.value, self.lo, self.hi, self.marker = value, lo, hi, marker
+            self.update()
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        r = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = r.height() / 2
+        p.setPen(Qt.NoPen)
+        p.setBrush(qcolor("line"))
+        p.drawRoundedRect(r, rad, rad)
+        w = r.width()
+        if self.lo is not None and self.hi is not None and self.hi > self.lo:
+            p.setBrush(QtGui.QColor(60, 207, 122, 55))
+            p.drawRoundedRect(QtCore.QRectF(r.x() + self.lo * w, r.y(), (self.hi - self.lo) * w, r.height()), rad, rad)
+        if self.value is not None:
+            v = max(-1.0, min(1.0, self.value)) if self.bi else max(0.0, min(1.0, self.value))
+            p.setBrush(qcolor("accent"))
+            if self.bi:
+                c = r.x() + w / 2
+                x0, x1 = sorted((c, c + v * w / 2))
+                p.drawRoundedRect(QtCore.QRectF(x0, r.y() + 2, max(x1 - x0, 3), r.height() - 4), rad - 2, rad - 2)
+            else:
+                p.drawRoundedRect(QtCore.QRectF(r.x(), r.y() + 2, max(v * w, 3), r.height() - 4), rad - 2, rad - 2)
+        if self.marker is not None:
+            x = r.x() + max(0.0, min(1.0, self.marker)) * w
+            p.setBrush(qcolor("text"))
+            p.drawRoundedRect(QtCore.QRectF(x - 2, r.y(), 4, r.height()), 2, 2)
+        if self.bi:
+            p.setPen(QtGui.QPen(qcolor("faint"), 1))
+            p.drawLine(QtCore.QPointF(r.center().x(), r.y()), QtCore.QPointF(r.center().x(), r.bottom()))
+        p.end()
+
+
+class Lamp(QtWidgets.QLabel):
+    def __init__(self, text):
+        super().__init__(text)
+        self.setAlignment(Qt.AlignCenter)
+        self.setMinimumSize(54, 28)
+        self.on = None
+        self.set(False)
+
+    def set(self, on):
+        if on == self.on:
+            return
+        self.on = on
+        self.setStyleSheet("border-radius: 7px; padding: 2px 6px; font-size: 10pt; %s" % (
+            "background: %s; color: #0b1a10; font-weight: 600;" % C["ok"] if on else
+            "background: %s; color: %s;" % (C["card2"], C["dim"])))
+
+
+class HatView(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.x = self.y = 0
+        self.setFixedSize(64, 64)
+
+    def set(self, x, y):
+        if (x, y) != (self.x, self.y):
+            self.x, self.y = x, y
+            self.update()
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setPen(QtGui.QPen(qcolor("line"), 2))
+        p.setBrush(qcolor("card2"))
+        p.drawEllipse(QtCore.QRectF(4, 4, 56, 56))
+        p.setPen(Qt.NoPen)
+        p.setBrush(qcolor("ok") if (self.x or self.y) else qcolor("faint"))
+        p.drawEllipse(QtCore.QPointF(32 + 18 * self.x, 32 + 18 * self.y), 7, 7)
+        p.end()
+
+
+class CurveEditor(QtWidgets.QWidget):
+    """The response curve, with three handles to drag: dead zone, curve (midpoint) and end limit."""
+    changed = Signal()
+
+    def __init__(self, ctl, ses, parent=None):
+        super().__init__(parent)
+        self.ctl, self.ses, self.job = ctl, ses, None
+        self.drag = None
+        self.hover = None
+        self.setMinimumSize(380, 380)
+        self.setMouseTracking(True)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+
+    def sizeHint(self):
+        return QtCore.QSize(460, 460)
+
+    def set_job(self, job):
+        self.job = job
+        self.update()
+
+    # geometry: a square plot inside a margin
+    def _box(self):
+        m = 34
+        side = min(self.width(), self.height()) - 2 * m
+        return QtCore.QRectF((self.width() - side) / 2, m * 0.6, side, side)
+
+    def _stick(self):
+        return self.job in self.ctl.STICKS
+
+    def _to_px(self, x, y):
+        b = self._box()
+        if self._stick():
+            return QtCore.QPointF(b.x() + (x + 1) / 2 * b.width(), b.bottom() - (y + 1) / 2 * b.height())
+        return QtCore.QPointF(b.x() + x * b.width(), b.bottom() - y * b.height())
+
+    def _from_px(self, pt):
+        b = self._box()
+        fx = (pt.x() - b.x()) / b.width()
+        fy = (b.bottom() - pt.y()) / b.height()
+        if self._stick():
+            return fx * 2 - 1, fy * 2 - 1
+        return fx, fy
+
+    def _handles(self):
+        if not self.job:
+            return {}
+        return self.ctl.shape_handles(self.job, self.ses.shape(self.job))
+
+    def _hit(self, pos):
+        best, bd = None, 18.0
+        for name, (x, y) in self._handles().items():
+            q = self._to_px(x, y)
+            d = ((q.x() - pos.x()) ** 2 + (q.y() - pos.y()) ** 2) ** 0.5
+            if d < bd:
+                best, bd = name, d
+        return best
+
+    def mousePressEvent(self, e):
+        self.drag = self._hit(e.pos())
+        if self.drag:
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if self.drag and self.job:
+            x, y = self._from_px(QtCore.QPointF(e.pos()))
+            upd = self.ctl.drag_shape(self.job, self.ses.shape(self.job), self.drag, x, y)
+            for k, v in upd.items():
+                self.ses.set_shape(self.job, k, v)
+            self.changed.emit()
+            self.update()
+            return
+        h = self._hit(e.pos())
+        if h != self.hover:
+            self.hover = h
+            self.setCursor(Qt.OpenHandCursor if h else Qt.ArrowCursor)
+            self.setToolTip({"deadzone": "Drag sideways: dead zone", "curve": "Drag up or down: curve",
+                             "limit": "Drag up or down: end limit"}.get(h, ""))
+            self.update()
+
+    def mouseReleaseEvent(self, _e):
+        self.drag = None
+        self.setCursor(Qt.OpenHandCursor if self.hover else Qt.ArrowCursor)
+
+    def paintEvent(self, _e):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        b = self._box()
+        p.setPen(Qt.NoPen)
+        p.setBrush(qcolor("card"))
+        p.drawRoundedRect(b.adjusted(-6, -6, 6, 6), 10, 10)
+        grid = QtGui.QPen(qcolor("line"), 1)
+        p.setPen(grid)
+        for i in range(1, 8):
+            x = b.x() + b.width() * i / 8
+            y = b.y() + b.height() * i / 8
+            p.drawLine(QtCore.QPointF(x, b.y()), QtCore.QPointF(x, b.bottom()))
+            p.drawLine(QtCore.QPointF(b.x(), y), QtCore.QPointF(b.right(), y))
+        if not self.job:
+            p.setPen(qcolor("dim"))
+            p.drawText(b, Qt.AlignCenter, "Pick an axis on the left")
+            p.end()
+            return
+        stick = self._stick()
+        s = self.ses.shape(self.job)
+        lo = -1 if stick else 0
+        # dead zone band
+        dz = s["deadzone"]
+        if dz > 0:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QtGui.QColor(245, 179, 64, 40))
+            a, c = self._to_px(-dz if stick else 0, 1), self._to_px(dz, lo)
+            p.drawRect(QtCore.QRectF(a, c))
+        # straight line for reference
+        p.setPen(QtGui.QPen(qcolor("faint"), 1, Qt.DashLine))
+        p.drawLine(self._to_px(lo, lo), self._to_px(1, 1))
+        # axes through the centre
+        if stick:
+            p.setPen(QtGui.QPen(qcolor("faint"), 1))
+            p.drawLine(self._to_px(-1, 0), self._to_px(1, 0))
+            p.drawLine(self._to_px(0, -1), self._to_px(0, 1))
+        # the curve
+        path = QtGui.QPainterPath()
+        pts = self.ses.curve(self.job, n=121)
+        path.moveTo(self._to_px(*pts[0]))
+        for x, y in pts[1:]:
+            path.lineTo(self._to_px(x, y))
+        glow = QtGui.QPen(QtGui.QColor(76, 155, 255, 60), 9)
+        glow.setCapStyle(Qt.RoundCap)
+        p.setPen(glow)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        p.setPen(QtGui.QPen(qcolor("curve"), 3))
+        p.drawPath(path)
+        # limit line
+        lim = max(-1.0, min(1.0, s["limit"] + s["offset"]))
+        p.setPen(QtGui.QPen(QtGui.QColor(239, 91, 91, 120), 1, Qt.DashLine))
+        p.drawLine(self._to_px(lo, lim), self._to_px(1, lim))
+        # handles
+        for name, (x, y) in self._handles().items():
+            q = self._to_px(x, y)
+            active = name in (self.drag, self.hover)
+            col = {"deadzone": "warn", "curve": "accent", "limit": "bad"}[name]
+            p.setPen(QtGui.QPen(qcolor("bg"), 2))
+            p.setBrush(qcolor(col))
+            p.drawEllipse(q, 9 if active else 7, 9 if active else 7)
+        # live dot
+        r = self.ses.raw(self.job)
+        if r is not None:
+            y = self.ses.live(self.job)
+            q = self._to_px(r, y)
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 107, 107, 90), 1))
+            p.drawLine(QtCore.QPointF(q.x(), b.bottom()), q)
+            p.setPen(QtGui.QPen(qcolor("bg"), 2))
+            p.setBrush(qcolor("dot"))
+            p.drawEllipse(q, 6, 6)
+        # labels
+        p.setPen(qcolor("dim"))
+        f = p.font()
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+        p.drawText(QtCore.QRectF(b.x(), b.bottom() + 6, b.width(), 18), Qt.AlignCenter, "stick position")
+        p.save()
+        p.translate(b.x() - 10, b.center().y())
+        p.rotate(-90)
+        p.drawText(QtCore.QRectF(-b.height() / 2, -16, b.height(), 16), Qt.AlignCenter, "to FlightGear")
+        p.restore()
+        p.end()
+
+
+class AxisCard(QtWidgets.QFrame):
+    clicked = Signal(str)
+
+    def __init__(self, ctl, job, parent=None):
+        super().__init__(parent)
+        self.job = job
+        self.sup = None
+        self.setObjectName("axiscard")
+        self.setProperty("selected", False)
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(12, 8, 12, 10)
+        lay.setSpacing(4)
+        row = QtWidgets.QHBoxLayout()
+        self.title = label(ctl.AXIS_JOBS[job]["title"].split(" (")[0])
+        self.title.setStyleSheet("font-weight: 600;")
+        self.value = label("", "dim")
+        row.addWidget(self.title)
+        row.addStretch(1)
+        row.addWidget(self.value)
+        lay.addLayout(row)
+        self.bound = label("", "dim")
+        self.bound.setStyleSheet("font-size: 9.5pt; color: %s;" % C["dim"])
+        lay.addWidget(self.bound)
+        self.meter = Meter(bi=job in ctl.STICKS, height=8)
+        lay.addWidget(self.meter)
+
+    def mousePressEvent(self, _e):
+        self.clicked.emit(self.job)
+
+    def select(self, on):
+        self.setProperty("selected", bool(on))
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
+# ---------------------------------------------------------------- pages
+class AxesPage(QtWidgets.QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.ctl, self.ses = win, win.ctl, win.ses
+        ctl = self.ctl
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 10)
+        lay.setSpacing(16)
+
+        # left: one card per axis job
+        col = QtWidgets.QVBoxLayout()
+        col.setSpacing(8)
+        col.addWidget(label("Axes", "h2"))
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        host = QtWidgets.QWidget()
+        host.setObjectName("root")
+        left = QtWidgets.QVBoxLayout(host)
+        left.setContentsMargins(0, 0, 8, 0)
+        left.setSpacing(8)
+        self.cards = {}
+        main = [j for j in ("aileron", "elevator", "rudder", "throttle", "mixture", "propeller") if j in ctl.AXIS_JOBS]
+        rest = [j for j in ctl.AXIS_JOBS if j not in main]
+        for job in main:
+            self._add_card(left, job)
+        if rest:
+            more = label("More axes", "dim")
+            more.setStyleSheet("color: %s; font-weight: 600; padding-top: 8px;" % C["dim"])
+            left.addWidget(more)
+            for job in rest:
+                self._add_card(left, job)
+        left.addStretch(1)
+        area.setWidget(host)
+        col.addWidget(area, 1)
+        lw = QtWidgets.QWidget()
+        lw.setLayout(col)
+        lw.setFixedWidth(340)
+        lay.addWidget(lw)
+
+        # right: editor
+        ed = card()
+        el = QtWidgets.QVBoxLayout(ed)
+        el.setContentsMargins(18, 14, 18, 14)
+        head = QtWidgets.QHBoxLayout()
+        tl = QtWidgets.QVBoxLayout()
+        self.h_title = label("", "h2")
+        self.h_bound = label("", "dim")
+        tl.addWidget(self.h_title)
+        tl.addWidget(self.h_bound)
+        head.addLayout(tl)
+        head.addStretch(1)
+        self.b_assign = button("Assign: move the axis", self.assign, "assign",
+                               "Then move the stick, twist or lever you want for this job")
+        self.b_rev = button("Reverse", self.reverse, tip="Flip the direction")
+        self.b_clear = button("Clear", self.clear, "danger", tip="Unbind this job")
+        self.b_reset = button("Reset curve", self.reset, tip="Back to the default response for this scope")
+        for b in (self.b_assign, self.b_rev, self.b_clear, self.b_reset):
+            head.addWidget(b)
+        el.addLayout(head)
+
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(18)
+        self.curve = CurveEditor(ctl, self.ses)
+        self.curve.changed.connect(self.sync_controls)
+        body.addWidget(self.curve, 3)
+
+        side = QtWidgets.QVBoxLayout()
+        side.setSpacing(8)
+        self.rows = {}
+        names = {"deadzone": "Dead zone", "sensitivity": "Sensitivity", "expo": "Curve", "limit": "End limit",
+                 "offset": "Centre offset", "smooth": "Smoothing"}
+        for key in ["deadzone", "sensitivity", "expo", "limit", "offset", "smooth"]:
+            lo, hi = ctl.SHAPE_RANGE[key]
+            top = QtWidgets.QHBoxLayout()
+            name = label(names[key])
+            name.setStyleSheet("font-weight: 600;")
+            name.setToolTip(ctl.SHAPE_HELP[key])
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(lo, hi)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.01)
+            spin.setFixedWidth(90)
+            spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+            spin.setAlignment(Qt.AlignRight)
+            top.addWidget(name)
+            top.addStretch(1)
+            top.addWidget(spin)
+            sl = QtWidgets.QSlider(Qt.Horizontal)
+            sl.setRange(0, 1000)
+            hint = label(ctl.SHAPE_HELP[key].split(": ", 1)[-1], "dim", wrap=True)
+            hint.setStyleSheet("font-size: 9.5pt; color: %s;" % C["dim"])
+            side.addLayout(top)
+            side.addWidget(sl)
+            side.addWidget(hint)
+            side.addSpacing(4)
+            sl.valueChanged.connect(lambda v, k=key: self.from_slider(k, v))
+            spin.valueChanged.connect(lambda v, k=key: self.from_spin(k, v))
+            self.rows[key] = (sl, spin)
+        self.split = QtWidgets.QCheckBox(ctl.SHAPE_HELP["split"])
+        self.split.toggled.connect(self.on_split)
+        side.addWidget(self.split)
+        side.addStretch(1)
+        sw = QtWidgets.QWidget()
+        sw.setLayout(side)
+        sw.setFixedWidth(330)
+        body.addWidget(sw)
+        el.addLayout(body, 1)
+
+        live = QtWidgets.QGridLayout()
+        live.setHorizontalSpacing(12)
+        live.addWidget(label("Stick", "dim"), 0, 0)
+        self.m_in = Meter(bi=True, height=14)
+        live.addWidget(self.m_in, 0, 1)
+        self.t_in = label("", "dim")
+        self.t_in.setFixedWidth(70)
+        live.addWidget(self.t_in, 0, 2)
+        live.addWidget(label("FlightGear", "dim"), 1, 0)
+        self.m_out = Meter(bi=True, height=14)
+        live.addWidget(self.m_out, 1, 1)
+        self.t_out = label("", "dim")
+        self.t_out.setFixedWidth(70)
+        live.addWidget(self.t_out, 1, 2)
+        live.setColumnStretch(1, 1)
+        el.addLayout(live)
+        lay.addWidget(ed, 1)
+
+        self.job = None
+        self.busy = False
+        first = next((j for j in ctl.AXIS_JOBS if j in self.ses.mapping["axes"]), next(iter(ctl.AXIS_JOBS)))
+        self.pick(first)
+
+    def _add_card(self, lay, job):
+        c = AxisCard(self.ctl, job)
+        c.clicked.connect(self.pick)
+        lay.addWidget(c)
+        self.cards[job] = c
+
+    # -- picking and editing
+    def pick(self, job):
+        self.job = job
+        for j, c in self.cards.items():
+            c.select(j == job)
+        self.curve.set_job(job)
+        stick = job in self.ctl.STICKS
+        self.m_in.bi = self.m_out.bi = stick
+        self.split.setVisible(job == "rudder")
+        self.h_title.setText(self.ctl.AXIS_JOBS[job]["title"])
+        self.sync_controls()
+
+    def _to_slider(self, key, v):
+        lo, hi = self.ctl.SHAPE_RANGE[key]
+        return int(round((v - lo) / (hi - lo) * 1000))
+
+    def from_slider(self, key, v):
+        if self.busy or not self.job:
+            return
+        lo, hi = self.ctl.SHAPE_RANGE[key]
+        self.ses.set_shape(self.job, key, lo + (hi - lo) * v / 1000.0)
+        self.sync_controls(skip=key)
+
+    def from_spin(self, key, v):
+        if self.busy or not self.job:
+            return
+        self.ses.set_shape(self.job, key, v)
+        self.sync_controls()
+
+    def on_split(self, on):
+        if not self.busy and self.job:
+            self.ses.set_shape(self.job, "split", on)
+
+    def sync_controls(self, skip=None):
+        if not self.job:
+            return
+        s = self.ses.shape(self.job)
+        self.busy = True
+        for key, (sl, spin) in self.rows.items():
+            if key != skip:
+                sl.setValue(self._to_slider(key, s[key]))
+            spin.setValue(s[key])
+        self.split.setChecked(bool(s.get("split")))
+        self.busy = False
+        self.curve.update()
+        self.win.mark()
+
+    def assign(self):
+        self.ses.start_capture(self.job)
+        self.win.mark()
+
+    def reverse(self):
+        self.ses.reverse(self.job)
+        self.win.mark()
+
+    def clear(self):
+        self.ses.clear(self.job)
+        self.win.mark()
+
+    def reset(self):
+        self.ses.reset_shape(self.job)
+        self.sync_controls()
+
+    def scope_changed(self):
+        self.sync_controls()
+
+    # -- live
+    def tick(self):
+        ses = self.ses
+        for job, c in self.cards.items():
+            b = ses.binding_text(job)
+            c.bound.setText("Not bound" if b == "-" else b)
+            v = ses.live(job)
+            c.meter.set(v)
+            c.value.setText("" if v is None else ("%+.2f" % v if job in self.ctl.STICKS else "%.2f" % v))
+            sup = (ses.support(job), ses.aircraft)
+            if c.sup != sup:   # style sheets are slow to apply, so only on a change
+                c.sup = sup
+                c.title.setStyleSheet("font-weight: 600; color: %s;" % (C["faint"] if sup[0] is False else C["text"]))
+                c.setToolTip("%s doesn't use this" % ses.aircraft if sup[0] is False else "")
+        job = self.job
+        b = ses.binding_text(job)
+        self.h_bound.setText("Not bound yet: press Assign, then move the axis" if b == "-" else "Bound to " + b)
+        self.b_rev.setEnabled(b != "-")
+        self.b_clear.setEnabled(b != "-")
+        r, v = ses.raw(job), ses.live(job)
+        self.m_in.set(r)
+        self.m_out.set(v)
+        self.t_in.setText("" if r is None else "%+.2f" % r)
+        self.t_out.setText("" if v is None else "%+.2f" % v)
+        self.curve.update()
+
+
+class ButtonsPage(QtWidgets.QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.ctl, self.ses = win, win.ctl, win.ses
+        ctl = self.ctl
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 10)
+        lay.setSpacing(10)
+        bar = QtWidgets.QHBoxLayout()
+        bar.addWidget(label("Buttons and switches", "h2"))
+        bar.addSpacing(16)
+        self.search = QtWidgets.QLineEdit()
+        self.search.setPlaceholderText("Search jobs, e.g. flaps, brake, view")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.filter)
+        self.search.setMinimumWidth(320)
+        bar.addWidget(self.search)
+        self.show_box = QtWidgets.QComboBox()
+        self.show_box.addItems(["All jobs", "Bound", "Not bound", "This aircraft only"])
+        self.show_box.currentIndexChanged.connect(self.filter)
+        bar.addWidget(self.show_box)
+        bar.addStretch(1)
+        self.b_assign = button("Assign: press a button", self.assign, "assign",
+                               "Then press the stick button (or push the hat) you want for the selected job")
+        self.b_clear = button("Clear", self.clear, "danger")
+        bar.addWidget(self.b_assign)
+        bar.addWidget(self.b_clear)
+        lay.addLayout(bar)
+        tip = label("Press any button on a stick to jump to the job it does. Double-click a job to assign it.", "dim")
+        lay.addWidget(tip)
+
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Job", "Bound to", ""])
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setIndentation(18)
+        hdr = self.tree.header()
+        hdr.setStretchLastSection(False)
+        mode = QtWidgets.QHeaderView.Stretch
+        hdr.setSectionResizeMode(0, mode)
+        hdr.setSectionResizeMode(1, mode)
+        hdr.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        self.tree.setColumnWidth(2, 70)
+        self.tree.itemDoubleClicked.connect(lambda *_a: self.assign())
+        self.items, self.groups = {}, {}
+        jobs = ["hat"] + list(ctl.BUTTON_JOBS)
+        for g in ctl.GROUPS:
+            mine = [j for j in jobs if ctl.JOBS[j]["group"] == g]
+            if not mine:
+                continue
+            gi = QtWidgets.QTreeWidgetItem([g, "", ""])
+            f = gi.font(0)
+            f.setBold(True)
+            gi.setFont(0, f)
+            gi.setFlags(Qt.ItemIsEnabled)
+            self.tree.addTopLevelItem(gi)
+            self.groups[g] = gi
+            for j in mine:
+                it = QtWidgets.QTreeWidgetItem([ctl.job_title(j), "", ""])
+                it.setData(0, Qt.UserRole, j)
+                it.setTextAlignment(2, Qt.AlignCenter)
+                gi.addChild(it)
+                self.items[j] = it
+            gi.setExpanded(True)
+        lay.addWidget(self.tree, 1)
+        self.last_pressed = set()
+        self.cache = {}
+
+    def selected_job(self):
+        it = self.tree.currentItem()
+        return it.data(0, Qt.UserRole) if it is not None else None
+
+    def assign(self):
+        j = self.selected_job()
+        if j:
+            self.ses.start_capture(j)
+        else:
+            self.ses.message = "Pick a job in the list first."
+        self.win.mark()
+
+    def clear(self):
+        j = self.selected_job()
+        if j:
+            self.ses.clear(j)
+            self.win.mark()
+
+    def filter(self, *_a):
+        q = self.search.text().strip().lower()
+        mode = self.show_box.currentIndex()
+        for g, gi in self.groups.items():
+            shown = 0
+            for i in range(gi.childCount()):
+                it = gi.child(i)
+                j = it.data(0, Qt.UserRole)
+                bound = self.ses.binding_text(j) != "-"
+                ok = (not q or q in it.text(0).lower() or q in it.text(1).lower())
+                ok = ok and (mode != 1 or bound) and (mode != 2 or not bound) and (mode != 3 or self.ses.support(j) is not False)
+                it.setHidden(not ok)
+                shown += ok
+            gi.setHidden(shown == 0)
+
+    def tick(self):
+        ses = self.ses
+        dim, txt, ok = qcolor("faint"), qcolor("text"), qcolor("ok")
+        for j, it in self.items.items():
+            b = ses.binding_text(j)
+            sup = ses.support(j)
+            live = ses.live(j) if j != "hat" else None
+            state = (b, sup, bool(live))
+            if self.cache.get(j) == state:
+                continue
+            self.cache[j] = state
+            it.setText(1, "" if b == "-" else b)
+            col = dim if sup is False else txt
+            it.setForeground(0, QtGui.QBrush(col))
+            it.setForeground(1, QtGui.QBrush(qcolor("dim")))
+            it.setToolTip(0, ("%s doesn't use this" % ses.aircraft) if sup is False else "")
+            it.setText(2, "●" if live else "")
+            it.setForeground(2, QtGui.QBrush(ok))
+        for g, gi in self.groups.items():
+            n = sum(1 for i in range(gi.childCount()) if gi.child(i).text(1))
+            gi.setText(1, "%d bound" % n if n else "")
+            gi.setForeground(1, QtGui.QBrush(qcolor("dim")))
+        # press-to-find: a fresh press (not while assigning) selects the job it does
+        new = ses.pressed - self.last_pressed
+        self.last_pressed = set(ses.pressed)
+        if new and not ses.capture:
+            path, code = sorted(new)[0]
+            d = ses.names.get(path)
+            dev = self.ctl.dev_key(d) if d else None
+            hit = [j for j, v in ses.mapping["buttons"].items() if v.get("dev") == dev and v.get("code") == code]
+            bname = self.ctl.key_name(code).replace("button-", "button ")
+            if hit:
+                it = self.items.get(hit[0])
+                if it is not None:
+                    it.setHidden(False)
+                    it.parent().setHidden(False)
+                    self.tree.setCurrentItem(it)
+                    self.tree.scrollToItem(it)
+                ses.message = "%s on %s does: %s." % (bname, d.name if d else "?", ", ".join(self.ctl.job_title(h) for h in hit))
+            else:
+                ses.message = "%s on %s isn't bound. Pick a job and press Assign." % (bname, d.name if d else "?")
+
+
+class SticksPage(QtWidgets.QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win, self.ctl, self.ses = win, win.ctl, win.ses
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 10)
+        outer.addWidget(label("Your sticks", "h2"))
+        outer.addWidget(label("Move every stick, twist and lever end to end once: the green band is the range "
+                              "seen, and that calibrates the axis when you save.", "dim", wrap=True))
+        area = QtWidgets.QScrollArea()
+        area.setWidgetResizable(True)
+        host = QtWidgets.QWidget()
+        host.setObjectName("root")
+        hv = QtWidgets.QVBoxLayout(host)
+        hv.setContentsMargins(0, 8, 0, 0)
+        grid = QtWidgets.QHBoxLayout()
+        grid.setSpacing(16)
+        hv.addLayout(grid)
+        hv.addStretch(1)
+        self.bars, self.lamps, self.hats = [], [], []
+        ctl = self.ctl
+        if not self.ses.devs:
+            grid.addWidget(label("No Saitek controller found. Plug them in and reopen this window.", "dim"))
+        for d in self.ses.devs:
+            c = card()
+            cl = QtWidgets.QVBoxLayout(c)
+            cl.setContentsMargins(16, 12, 16, 14)
+            t = label(d.name)
+            t.setStyleSheet("font-weight: 600; font-size: 12pt;")
+            cl.addWidget(t)
+            axes, keys = ctl.describe(d)
+            g = QtWidgets.QGridLayout()
+            g.setHorizontalSpacing(10)
+            row = 0
+            hat = [code for code, *_r in axes if code in ctl.HAT_CODES]
+            for code, name, _a, _b, _v in axes:
+                if code in ctl.HAT_CODES:
+                    continue
+                g.addWidget(label(ctl.PLAIN.get(code, name), "dim"), row, 0)
+                m = Meter(height=14)
+                g.addWidget(m, row, 1)
+                self.bars.append((m, (d.path, code)))
+                row += 1
+            g.setColumnStretch(1, 1)
+            cl.addLayout(g)
+            if hat:
+                hr = QtWidgets.QHBoxLayout()
+                hr.addWidget(label("Hat", "dim"))
+                hv = HatView()
+                hr.addWidget(hv)
+                hr.addStretch(1)
+                cl.addLayout(hr)
+                self.hats.append((hv, d.path, hat))
+            lg = QtWidgets.QGridLayout()
+            lg.setSpacing(5)
+            for i, (code, name) in enumerate(keys):
+                lamp = Lamp(name.replace("button-", ""))
+                lg.addWidget(lamp, i // 6, i % 6)
+                self.lamps.append((lamp, (d.path, code)))
+            cl.addLayout(lg)
+            grid.addWidget(c, 1, Qt.AlignTop)
+        area.setWidget(host)
+        outer.addWidget(area, 1)
+
+    def tick(self):
+        ses = self.ses
+        for m, k in self.bars:
+            m.set(None, ses.lo.get(k), ses.hi.get(k), marker=ses.values.get(k, 0.5))
+        for lamp, k in self.lamps:
+            lamp.set(k in ses.pressed)
+        for hv, path, codes in self.hats:
+            xs = [ses.values.get((path, c), 0.5) for c in codes[:2]]
+            hv.set(*[(-1 if v < 0.25 else (1 if v > 0.75 else 0)) for v in xs + [0.5] * (2 - len(xs))])
+
+
+class FFBPage(QtWidgets.QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.dirty = False
+        self.ffbm, self.ffb_path = win.ctl.ffb_module()
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 10)
+        lay.addWidget(label("Force feedback", "h2"))
+        if self.ffbm is None:
+            lay.addWidget(label("The force feedback bridge (fgfs-mga-ffb) isn't installed next to this tool.", "dim"))
+            lay.addStretch(1)
+            return
+        m = self.ffbm
+        conf = m.load_conf()
+        c = card()
+        c.setMaximumWidth(900)
+        cl = QtWidgets.QVBoxLayout(c)
+        cl.setContentsMargins(20, 16, 20, 16)
+        cl.setSpacing(10)
+        self.en = QtWidgets.QCheckBox("Force feedback on (Saitek Cyborg Evo Force)")
+        self.en.setChecked(bool(conf["enabled"]))
+        self.en.toggled.connect(self.touch)
+        self.en.setStyleSheet("font-weight: 600; font-size: 12pt;")
+        cl.addWidget(self.en)
+        self.vals = {}
+        g = QtWidgets.QGridLayout()
+        g.setHorizontalSpacing(14)
+        g.setVerticalSpacing(10)
+        for i, key in enumerate(["master", "spring", "buffet", "rumble", "vref_kt", "buffet_alpha", "trim_follow"]):
+            lo, hi = m.RANGE[key]
+            text = m.HELP[key]
+            name, _sep, rest = text.partition(": ")
+            nl = label(name)
+            nl.setStyleSheet("font-weight: 600;%s" % (" font-size: 12pt;" if key == "master" else ""))
+            hl = label(rest, "dim", wrap=True)
+            hl.setStyleSheet("font-size: 9.5pt; color: %s;" % C["dim"])
+            box = QtWidgets.QVBoxLayout()
+            box.setSpacing(0)
+            box.addWidget(nl)
+            box.addWidget(hl)
+            sl = QtWidgets.QSlider(Qt.Horizontal)
+            step = 10 if hi - lo <= 30 else 1
+            sl.setRange(int(lo * step), int(hi * step))
+            sl.setValue(int(round(conf[key] * step)))
+            val = label("", "dim")
+            val.setFixedWidth(60)
+            val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            unit = "%" if hi == 100 else (" kt" if key == "vref_kt" else "°")
+
+            def moved(v, val=val, step=step, unit=unit):
+                val.setText(("%g" % round(v / step, 1)) + unit)
+                self.touch()
+            sl.valueChanged.connect(moved)
+            val.setText(("%g" % round(conf[key], 1)) + unit)
+            g.addLayout(box, i, 0)
+            g.addWidget(sl, i, 1)
+            g.addWidget(val, i, 2)
+            self.vals[key] = (sl, step)
+        g.setColumnStretch(1, 1)
+        g.setColumnMinimumWidth(0, 330)
+        cl.addLayout(g)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(button("Test on the stick", self.test, tip="Saves, then plays spring, buffet and rumble for 2 s each"))
+        row.addWidget(button("Moderate defaults", self.defaults))
+        row.addStretch(1)
+        cl.addLayout(row)
+        self.note = label("fgfs-mga turns force feedback on by itself when the Evo's driver is loaded. "
+                          "For one flight: fgfs-mga --ffb or --no-ffb. A running flight picks up a save within a second.",
+                          "dim", wrap=True)
+        cl.addWidget(self.note)
+        lay.addWidget(c)
+        lay.addStretch(1)
+        self.dirty = False
+
+    def touch(self, *_a):
+        self.dirty = True
+        self.win.mark()
+
+    def collect(self):
+        c = {k: round(sl.value() / step, 1) for k, (sl, step) in self.vals.items()}
+        c["enabled"] = self.en.isChecked()
+        return c
+
+    def save(self):
+        if self.ffbm is None or not self.dirty:
+            return False
+        self.ffbm.save_conf(dict(self.ffbm.load_conf(), **self.collect()))
+        self.dirty = False
+        return True
+
+    def defaults(self):
+        for k, (sl, step) in self.vals.items():
+            sl.setValue(int(round(self.ffbm.DEFAULTS[k] * step)))
+        self.en.setChecked(True)
+
+    def test(self):
+        self.dirty = True
+        self.save()
+        try:
+            QtCore.QProcess.startDetached(sys.executable, [self.ffb_path, "test"])
+            self.win.ses.message = "Playing spring, buffet and rumble for 2 s each. Hold the stick loosely."
+        except Exception as e:  # noqa: BLE001 - shown to the user
+            self.win.ses.message = "Couldn't start the test: %s" % e
+        self.win.mark()
+
+
+# ---------------------------------------------------------------- window
+class Window(QtWidgets.QMainWindow):
+    def __init__(self, ctl, ses, planes, dry=False):
+        super().__init__()
+        self.ctl, self.ses, self.planes, self.dry = ctl, ses, planes, dry
+        self.ready = False
+        ses.message = ("Move every stick, twist and lever end to end once (that calibrates them), "
+                       "then pick a job and press Assign.")
+        self.setWindowTitle("FlightGear controls")
+        root = QtWidgets.QWidget()
+        root.setObjectName("root")
+        self.setCentralWidget(root)
+        v = QtWidgets.QVBoxLayout(root)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        top = QtWidgets.QFrame()
+        top.setObjectName("topbar")
+        tl = QtWidgets.QHBoxLayout(top)
+        tl.setContentsMargins(18, 10, 18, 10)
+        tl.setSpacing(12)
+        tl.addWidget(label("Controls", "title"))
+        tl.addSpacing(18)
+        tl.addWidget(label("Aircraft", "dim"))
+        self.ac = QtWidgets.QComboBox()
+        self.ac.addItem("All aircraft")
+        for a in planes:
+            self.ac.addItem(a)
+        self.ac.setMinimumWidth(260)
+        self.ac.currentIndexChanged.connect(self.pick_aircraft)
+        tl.addWidget(self.ac)
+        self.scope = label("", "scope")
+        tl.addWidget(self.scope, 1)
+        self.b_save = button("Save", self.save, "primary", "Ctrl+S")
+        self.b_close = button("Close", self.close)
+        tl.addWidget(self.b_save)
+        tl.addWidget(self.b_close)
+        v.addWidget(top)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
+        tf = self.tabs.tabBar().font()
+        tf.setPointSizeF(12)
+        self.tabs.tabBar().setFont(tf)
+        self.axes = AxesPage(self)
+        self.buttons = ButtonsPage(self)
+        self.sticks = SticksPage(self)
+        self.ffb = FFBPage(self)
+        self.tabs.addTab(self.axes, "Axes and response")
+        self.tabs.addTab(self.buttons, "Buttons")
+        self.tabs.addTab(self.sticks, "Sticks")
+        self.tabs.addTab(self.ffb, "Force feedback")
+        v.addWidget(self.tabs, 1)
+
+        self.status = QtWidgets.QFrame()
+        self.status.setObjectName("status")
+        sl = QtWidgets.QHBoxLayout(self.status)
+        sl.setContentsMargins(18, 10, 18, 10)
+        self.msg = label("", "statustext", wrap=True)
+        sl.addWidget(self.msg, 1)
+        self.b_cancel = button("Cancel assign", self.cancel)
+        sl.addWidget(self.b_cancel)
+        v.addWidget(self.status)
+
+        sc = getattr(QtWidgets, "QShortcut", None) or QtGui.QShortcut
+        for keys, slot in (("Ctrl+S", self.save), ("Escape", self.cancel)):
+            s = sc(QtGui.QKeySequence(keys), self)
+            s.activated.connect(slot)
+
+        self.ready = True
+        self.pick_aircraft(0)
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self.tick)
+        self.timer.start(33)
+        self.tick()
+
+    def mark(self):
+        if self.ready:
+            self.tick(poll=False)
+
+    def pick_aircraft(self, i):
+        if i <= 0:
+            self.ses.set_aircraft(None)
+        else:
+            a = self.ac.itemText(i)
+            self.ses.set_aircraft(a, self.planes.get(a))
+        self.axes.scope_changed()
+        self.buttons.cache.clear()
+        self.buttons.filter()
+
+    def cancel(self):
+        if self.ses.capture:
+            self.ses.cancel_capture()
+            self.mark()
+
+    def save(self):
+        rc = self.ses.save(self.dry)
+        saved_ffb = self.ffb.save()
+        if rc != 0 and saved_ffb:
+            self.ses.message = "Force feedback saved. A running flight picks it up within a second."
+        warn = self.ses.problems()
+        if rc == 0 and warn:
+            self.ses.message += "  Check: " + "; ".join(warn) + "."
+        self.mark()
+
+    def closeEvent(self, e):
+        if self.ses.dirty or self.ffb.dirty:
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle("Unsaved changes")
+            box.setText("Save your changes before closing?")
+            box.setStandardButtons(QtWidgets.QMessageBox.Save | QtWidgets.QMessageBox.Discard |
+                                   QtWidgets.QMessageBox.Cancel)
+            r = box.exec() if hasattr(box, "exec") else box.exec_()
+            if r == QtWidgets.QMessageBox.Cancel:
+                e.ignore()
+                return
+            if r == QtWidgets.QMessageBox.Save:
+                self.save()
+        e.accept()
+
+    def tick(self, poll=True):
+        if poll:
+            try:
+                self.ses.poll()
+            except Exception:  # noqa: BLE001 - a stick unplugged mid-read shouldn't close the window
+                pass
+        ses = self.ses
+        if ses.aircraft:
+            own = self.axes.job and ses.has_own_shape(self.axes.job)
+            self.scope.setText("Response changes apply to %s only%s" % (
+                ses.aircraft, "" if own else " (it uses the all-aircraft settings until you change one)"))
+        else:
+            self.scope.setText("Response changes apply to every aircraft (unless one has its own)")
+        cap = bool(ses.capture)
+        if self.status.property("capture") != cap:
+            self.status.setProperty("capture", cap)
+            self.status.style().unpolish(self.status)
+            self.status.style().polish(self.status)
+        self.b_cancel.setVisible(cap)
+        dirty = ses.dirty or self.ffb.dirty
+        self.msg.setText(("Unsaved changes.  " if dirty and not cap else "") + ses.message)
+        self.b_save.setText("Save *" if dirty else "Save")
+        page = self.tabs.currentWidget()
+        if hasattr(page, "tick"):
+            page.tick()
+        if page is not self.buttons:
+            self.buttons.last_pressed = set(ses.pressed)
+
+
+def apply_theme(app):
+    """Dark Fusion look with the palette and style sheet above."""
+    app.setStyle("Fusion")
+    pal = QtGui.QPalette()
+    for role, col in (("Window", "bg"), ("WindowText", "text"), ("Base", "card"), ("AlternateBase", "card2"),
+                      ("Text", "text"), ("Button", "card2"), ("ButtonText", "text"), ("Highlight", "accent2"),
+                      ("HighlightedText", "text"), ("ToolTipBase", "card2"), ("ToolTipText", "text")):
+        r = getattr(QtGui.QPalette, role, None)
+        if r is None:
+            r = getattr(QtGui.QPalette.ColorRole, role)
+        pal.setColor(r, qcolor(col))
+    app.setPalette(pal)
+    f = app.font()
+    try:
+        fams = set(QtGui.QFontDatabase.families() if QT == "PySide6" else QtGui.QFontDatabase().families())
+    except Exception:  # noqa: BLE001
+        fams = set()
+    for fam in ("Inter", "Noto Sans", "Cantarell", "DejaVu Sans"):
+        if fam in fams:
+            f.setFamily(fam)
+            break
+    f.setPointSizeF(11)
+    app.setFont(f)
+    app.setStyleSheet(QSS)
+
+
+def run(ctl, args):
+    """Open the window. ctl is the fgfs-mga-controls module. Returns an exit code."""
+    devs = ctl.find_devices("--all" in args)
+    if not devs:
+        print("No Saitek controller found. Plug them in and try again.")
+    ses = ctl.Session(devs, ctl.load_map())
+    if hasattr(Qt, "AA_EnableHighDpiScaling"):
+        QtWidgets.QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([sys.argv[0]])
+    app.setApplicationName("fgfs-mga controls")
+    apply_theme(app)
+    win = Window(ctl, ses, ctl.find_aircraft(), dry="--dry-run" in args)
+    win.resize(1440, 900)
+    win.setMinimumSize(1100, 700)
+    shot = os.environ.get("FGFS_MGA_GUI_SHOT")   # test hook: save pictures of each tab, then close
+    close_after = os.environ.get("FGFS_MGA_GUI_AUTOCLOSE")
+    win.show()
+    if shot:
+        def snap():
+            for i in range(win.tabs.count()):
+                win.tabs.setCurrentIndex(i)
+                win.tick()
+                app.processEvents()
+                win.grab().save("%s-%d.png" % (shot, i))
+            win.ses.dirty = win.ffb.dirty = False
+            win.close()
+        QtCore.QTimer.singleShot(400, snap)
+    elif close_after:
+        def done():
+            win.ses.dirty = win.ffb.dirty = False
+            win.close()
+        QtCore.QTimer.singleShot(int(float(close_after) * 1000), done)
+    return app.exec() if hasattr(app, "exec") else app.exec_()
+
+
+if __name__ == "__main__":
+    from importlib.machinery import SourceFileLoader
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.exit(run(SourceFileLoader("fgfs_mga_controls", os.path.join(here, "fgfs-mga-controls")).load_module(),
+                 sys.argv[1:]))

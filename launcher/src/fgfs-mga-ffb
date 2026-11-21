@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""fgfs-mga ffb: force feedback for the Saitek Cyborg Evo Force while FlightGear flies.
+
+FlightGear sends a few properties over UDP (Protocol/fgfs-mga-ffb.xml, started by fgfs-mga with
+FFB=1 or --ffb); this turns them into stick effects:
+  control loading  a centring spring that stiffens with airspeed, centred on the elevator trim
+  stall buffet     a shake that grows past the stall warning / high angle of attack
+  ground rumble    a rumble on the ground that grows with ground speed
+Strengths come from ~/.config/fgfs-mga/ffb.json (the Force feedback tab in `fgfs-mga controls gui`),
+re-read once a second, so changes apply in flight.
+
+  fgfs-mga-ffb run [--port 5630] [--pid PID]   run the bridge (fgfs-mga starts it for you)
+  fgfs-mga-ffb test [effect]                   play each effect for 2 s at the saved strengths
+  fgfs-mga-ffb show                            print the settings and the stick found
+"""
+import json
+import os
+import select
+import socket
+import sys
+import time
+
+HOME = os.path.expanduser("~")
+CONF = os.path.join(HOME, ".config", "fgfs-mga", "ffb.json")
+NODE = "/dev/input/by-id/usb-Saitek_Cyborg_Evo_Force-event-joystick"
+PORT = 5630
+FIELDS = ["ias", "gs", "alpha", "stall", "wow0", "wow1", "wow2", "trim", "frozen"]
+
+DEFAULTS = {          # percent, moderate on purpose
+    "enabled": True,
+    "master": 70,
+    "spring": 45,      # control loading
+    "buffet": 50,
+    "rumble": 35,
+    "vref_kt": 110,    # airspeed where the controls reach full stiffness
+    "buffet_alpha": 14.0,   # angle of attack (deg) where the buffet starts without a stall warning
+    "trim_follow": 50,      # how far the spring centre follows the elevator trim
+}
+RANGE = {"master": (0, 100), "spring": (0, 100), "buffet": (0, 100), "rumble": (0, 100),
+         "vref_kt": (40, 250), "buffet_alpha": (5.0, 25.0), "trim_follow": (0, 100)}
+HELP = {
+    "master": "Master strength: scales every effect",
+    "spring": "Control loading: centring spring, stiffer as you speed up",
+    "buffet": "Stall buffet: shake near the stall",
+    "rumble": "Ground rumble: on the runway and taxiways",
+    "vref_kt": "Airspeed (kt) where the controls are fully stiff",
+    "buffet_alpha": "Angle of attack (deg) where the buffet starts",
+    "trim_follow": "How far the spring centre follows elevator trim (%)",
+}
+
+
+def load_conf():
+    c = dict(DEFAULTS)
+    try:
+        with open(CONF) as f:
+            c.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
+    except (OSError, ValueError):
+        pass
+    for k, (lo, hi) in RANGE.items():
+        try:
+            c[k] = max(lo, min(hi, float(c[k])))
+        except (TypeError, ValueError):
+            c[k] = DEFAULTS[k]
+    c["enabled"] = bool(c["enabled"])
+    return c
+
+
+def save_conf(c):
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    tmp = CONF + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({k: c[k] for k in DEFAULTS}, f, indent=1)
+    os.replace(tmp, CONF)
+
+
+def clamp(x, lo=0.0, hi=1.0):
+    return lo if x < lo else hi if x > hi else x
+
+
+def parse(line):
+    """One line from FlightGear -> dict of floats, or None if it doesn't look right."""
+    parts = line.strip().split(",")
+    if len(parts) != len(FIELDS):
+        return None
+    try:
+        return dict(zip(FIELDS, (float(p) for p in parts)))
+    except ValueError:
+        return None
+
+
+def targets(s, c):
+    """What each effect should do now: spring (coef 0..1, centre -1..1), buffet and rumble
+    (amplitude 0..1, period ms). Strength sliders are applied here; master is the device gain."""
+    on_ground = s["wow0"] > 0.5 or s["wow1"] > 0.5 or s["wow2"] > 0.5
+    q = clamp((max(s["ias"], 0.0) / c["vref_kt"]) ** 2)
+    spring = (c["spring"] / 100.0) * (0.15 + 0.85 * q)
+    centre = clamp(-s["trim"] * c["trim_follow"] / 100.0, -1.0, 1.0)
+    start = c["buffet_alpha"]
+    shake = clamp((s["alpha"] - start) / 6.0)
+    if s["stall"] > 0.5:
+        shake = max(shake, 0.5)
+    if on_ground:
+        shake = 0.0
+    buffet = (c["buffet"] / 100.0) * shake
+    gs = max(s["gs"], 0.0)
+    rumble = (c["rumble"] / 100.0) * clamp(gs / 40.0) if on_ground and gs > 2.0 else 0.0
+    rumble_ms = int(max(25, min(70, 70 - gs)))
+    if s["frozen"] > 0.5:
+        buffet = rumble = 0.0
+    return {"spring": (round(spring, 3), round(centre, 3)), "buffet": (round(buffet, 3), 70),
+            "rumble": (round(rumble, 3), rumble_ms)}
+
+
+class Stick:
+    """The Evo Force through evdev. Each effect is uploaded once and then updated in place."""
+
+    def __init__(self, path=NODE):
+        import evdev
+        from evdev import ecodes, ff
+        self.E, self.ff = ecodes, ff
+        self.dev = evdev.InputDevice(path)
+        self.ids, self.playing, self.last = {}, set(), {}
+
+    def gain(self, pct):
+        self.dev.write(self.E.EV_FF, self.E.FF_GAIN, int(0xFFFF * clamp(pct / 100.0)))
+
+    def _effect(self, kind, value):
+        E, ff = self.E, self.ff
+        env = ff.Envelope(0, 0, 0, 0)
+        eid = self.ids.get(kind, -1)
+        if kind == "spring":
+            coef, centre = value
+            k = int(0x7FFF * coef)
+            cy = int(0x7FFF * centre)
+            x = ff.Condition(0xFFFF, 0xFFFF, k, k, 0, 0)
+            y = ff.Condition(0xFFFF, 0xFFFF, k, k, 0, cy)
+            return ff.Effect(E.FF_SPRING, eid, 0, ff.Trigger(0, 0), ff.Replay(0, 0),
+                             ff.EffectType(ff_condition_effect=(x, y)))
+        amp, period = value
+        return ff.Effect(E.FF_PERIODIC, eid, 0x4000 if kind == "buffet" else 0, ff.Trigger(0, 0), ff.Replay(0, 0),
+                         ff.EffectType(ff_periodic_effect=ff.Periodic(E.FF_SINE, period, int(0x7FFF * amp), 0, 0, env)))
+
+    def set(self, kind, value):
+        """Upload/update one effect; play it when it's non-zero, stop it when it's zero."""
+        active = (value[0] > 0.005)
+        if self.last.get(kind) != value:
+            if active or kind in self.ids:
+                self.ids[kind] = self.dev.upload_effect(self._effect(kind, value))
+            self.last[kind] = value
+        if active and kind not in self.playing:
+            self.dev.write(self.E.EV_FF, self.ids[kind], 1)
+            self.playing.add(kind)
+        elif not active and kind in self.playing:
+            self.dev.write(self.E.EV_FF, self.ids[kind], 0)
+            self.playing.discard(kind)
+
+    def stop(self):
+        for kind in list(self.playing):
+            try:
+                self.dev.write(self.E.EV_FF, self.ids[kind], 0)
+            except OSError:
+                pass
+        self.playing.clear()
+
+    def close(self):
+        self.stop()
+        for eid in self.ids.values():
+            try:
+                self.dev.erase_effect(eid)
+            except OSError:
+                pass
+        self.ids.clear()
+        self.last.clear()
+
+
+def changed(a, b, tol=0.02):
+    """True when targets moved enough to be worth a USB update (keeps the stick's link quiet)."""
+    if a is None:
+        return True
+    for k in b:
+        for x, y in zip(a[k], b[k]):
+            if abs(x - y) > (tol if isinstance(x, float) else 2):
+                return True
+    return False
+
+
+def run(args, stick_factory=Stick, sock=None, clock=time.monotonic, max_loops=None):
+    port = int(args[args.index("--port") + 1]) if "--port" in args else PORT
+    pid = int(args[args.index("--pid") + 1]) if "--pid" in args else None
+    if sock is None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", port))
+    stick = None
+    conf, conf_mtime, next_conf = load_conf(), None, 0.0
+    sent, last_rx, loops, gain_set = None, None, 0, None
+    log = lambda m: print("fgfs-mga-ffb: " + m, flush=True)
+    log("listening on udp %d%s" % (port, " for fgfs pid %d" % pid if pid else ""))
+    try:
+        while max_loops is None or loops < max_loops:
+            loops += 1
+            now = clock()
+            if now >= next_conf:                       # settings changed in the GUI?
+                next_conf = now + 1.0
+                try:
+                    m = os.path.getmtime(CONF)
+                except OSError:
+                    m = None
+                if m != conf_mtime:
+                    conf_mtime, conf, sent = m, load_conf(), None
+                if pid and not os.path.exists("/proc/%d" % pid):
+                    log("FlightGear closed; stopping")
+                    break
+            if stick is None:
+                try:
+                    stick, gain_set = stick_factory(), None
+                    log("stick ready")
+                except OSError:
+                    stick = None
+            r, _w, _x = select.select([sock], [], [], 0.1)
+            s = None
+            while r:                                    # keep only the newest good packet
+                data = sock.recv(512)
+                for ln in data.decode("ascii", "replace").splitlines():
+                    s = parse(ln) or s
+                r, _w, _x = select.select([sock], [], [], 0)
+            if stick is None:
+                continue
+            try:
+                if s is not None:
+                    last_rx = now
+                    if not conf["enabled"]:
+                        stick.stop()
+                        continue
+                    if gain_set != conf["master"]:
+                        stick.gain(conf["master"])
+                        gain_set = conf["master"]
+                    t = targets(s, conf)
+                    if changed(sent, t):
+                        for kind in ("spring", "buffet", "rumble"):
+                            stick.set(kind, t[kind])
+                        sent = t
+                elif last_rx is not None and now - last_rx > 2.0:   # sim paused, reset or gone
+                    stick.stop()
+                    sent, last_rx = None, None
+            except OSError as e:                        # unplugged mid-flight
+                log("lost the stick (%s); waiting for it" % e)
+                stick, sent = None, None
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if stick:
+            stick.close()
+    return 0
+
+
+def cmd_test(args):
+    c = load_conf()
+    which = [a for a in args if a in ("spring", "buffet", "rumble")] or ["spring", "buffet", "rumble"]
+    try:
+        st = Stick()
+    except OSError as e:
+        print("Can't open the Evo Force (%s). Is it plugged in, with its force feedback driver loaded?" % e)
+        return 1
+    demo = {"spring": {"ias": c["vref_kt"], "gs": c["vref_kt"], "alpha": 3, "stall": 0, "wow0": 0, "wow1": 0, "wow2": 0, "trim": 0, "frozen": 0},
+            "buffet": {"ias": 50, "gs": 50, "alpha": c["buffet_alpha"] + 4, "stall": 1, "wow0": 0, "wow1": 0, "wow2": 0, "trim": 0, "frozen": 0},
+            "rumble": {"ias": 30, "gs": 30, "alpha": 0, "stall": 0, "wow0": 1, "wow1": 1, "wow2": 1, "trim": 0, "frozen": 0}}
+    try:
+        st.gain(c["master"])
+        for kind in which:
+            t = targets(demo[kind], c)
+            print("  %-7s %s ... " % (kind, t[kind]), end="", flush=True)
+            st.set(kind, t[kind])
+            time.sleep(2.0)
+            st.set(kind, (0.0,) + tuple(t[kind][1:]))
+            time.sleep(0.4)
+            print("done")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        st.close()
+    return 0
+
+
+def cmd_show(_args):
+    c = load_conf()
+    for k in DEFAULTS:
+        print("  %-13s %s" % (k, c[k]))
+    print("  stick: %s" % (os.path.realpath(NODE) if os.path.exists(NODE) else "not found (" + NODE + ")"))
+    return 0
+
+
+def main(argv):
+    cmd = argv[0] if argv else "show"
+    fn = {"run": run, "test": cmd_test, "show": cmd_show}.get(cmd)
+    if fn is None or "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0 if fn else 2
+    return fn(argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
