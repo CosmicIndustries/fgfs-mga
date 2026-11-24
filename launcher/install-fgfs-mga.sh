@@ -166,6 +166,7 @@ else
 #       --build NAME        source (default) | aeonwave | system (/usr/local/bin/fgfs)
 #       --aeonwave          same as --build aeonwave
 #       --no-tune           leave the radios where the aircraft starts them (default: COM_TUNE setting)
+#       --no-memprotect     don't ask the kernel to keep FlightGear's memory in RAM (default: MEM_PROTECT setting)
 #       --new / --old       FlightGear 2024.1.7 build / the older 2024.1.1 build (default: NEW_BUILD setting)
 #       --no-addons         don't load the add-ons
 #       --addons "A B"      load only these add-ons (folder names or full paths)
@@ -217,6 +218,8 @@ ADDON_DIRS=""                       # empty = $FG_HOME_DIR/Addons $FG_ROOT_DIR/A
 ADDONS="Logbook ATCChatter SpokenATC SpokenGCA PAR RedGriffinATC landing_rate which-runway"
 INPUT_MODE="event"                  # event | joystick | both | off (this kernel has no joydev, so event)
 AUDIO_FIX=1                         # unmute the board's ES8316 codec and the fgfs stream once sound starts
+OUTPUT_WAKE=1                       # before each flight, reset any running sound output whose device has
+                                    #   frozen (PipeWire says RUNNING, the card stopped; HDMI 1, Nov 2026). 0 = off
 PHOTOSCENERY=1                      # turn on the photoscenery overlay when Scenery-Addons/Orthophotos exists
 DEVELOPER=0                         # 1 = FlightGear developer mode (shows developer alerts, e.g. one
                                     #     "texture size not a power-of-two" line per GUI image)
@@ -227,6 +230,9 @@ CONTROLS_CHECK=1                    # before each flight: warn if a stick is unp
 COM_TUNE=1                          # tune COM1 to the start airport's tower (or CTAF/UNICOM) and COM2 to its
                                     #   approach (or departure, ATIS/AWOS), from apt.dat. Red Griffin ATC only
                                     #   finds a radio that is tuned to a station; the PA28 starts on 118.70/119.40
+MEM_PROTECT="4G"                    # run fgfs in a user scope with MemoryLow= this much (0 = off), so the kernel
+                                    #   swaps other programs first and FlightGear's sound keeps up. Only takes
+                                    #   effect once user.slice has MemoryLow too (see README, needs root once)
 DEFAULT_AIRCRAFT="warrior"
 DEFAULT_PRESET="balanced"
 DEFAULT_AIRPORT="KEZM"
@@ -264,7 +270,7 @@ fleet_map() {
     citabria|decathlon|zlin) echo "Zlin-50lx z50lx" ;;
     c182)                    echo "c182s c182s" ;;
     c182rg)                  echo "c182rg c182rg" ;;
-    pa18|supercub)           echo "Piper-PA-18 Piper-PA-18" ;;
+    pa18|supercub)           echo "J3Cub PA-18" ;;
     c337|skymaster)          echo "Cessna337 Cessna337" ;;
     dromader)                echo "Dromader Dromader" ;;
     agcat|g164)              echo "G-164 G-164" ;;
@@ -560,6 +566,33 @@ set_quantum() {
   export PULSE_PROP="${PULSE_PROP:+$PULSE_PROP }node.force-quantum=$AUDIO_QUANTUM"
 }
 
+# A sound output can freeze: PipeWire still shows the sink RUNNING, but its ALSA device sits stopped
+# (state SETUP, hw_ptr not moving), so every program plays into nothing. HDMI 1 did this on 22 Nov 2026
+# and stayed silent for a day and a half. Before each flight, check every running ALSA sink and, if its
+# device is stuck, suspend and resume the sink so PipeWire reopens it. Takes about a second when all is well.
+wake_output() {
+  (( OUTPUT_WAKE )) || return 0
+  command -v pactl >/dev/null 2>&1 || return 0
+  local name card dev f st p1 p2
+  while read -r name card dev; do
+    f="/proc/asound/card$card/pcm${dev}p/sub0/status"
+    [[ -r "$f" ]] || continue
+    st="$(awk '/^state:/ { print $2; exit }' "$f")"
+    p1="$(awk '/hw_ptr/ { print $3; exit }' "$f")"
+    sleep 0.3
+    p2="$(awk '/hw_ptr/ { print $3; exit }' "$f")"
+    if [[ "$st" != RUNNING || "$p1" == "$p2" ]]; then
+      warn "sound output $name was frozen (card $card: ${st:-closed}); resetting it"
+      pactl suspend-sink "$name" 1 2>/dev/null; sleep 0.5; pactl suspend-sink "$name" 0 2>/dev/null
+    fi
+  done < <(pactl list sinks 2>/dev/null | awk '
+    /^Sink #/ { n = ""; s = ""; c = ""; d = "" }
+    /^[[:space:]]*State:/ { s = $2 }
+    /^[[:space:]]*Name:/ { n = $2 }
+    /alsa\.card = / { gsub(/"/, "", $3); c = $3 }
+    /alsa\.device = / { gsub(/"/, "", $3); d = $3; if (s == "RUNNING" && n ~ /^alsa_output\./ && c != "") print n, c, d }')
+}
+
 # The ROCK 5B+ headphone codec (ES8316) can come up muted, and PipeWire can start the fgfs
 # stream at 0 %. Once fgfs opens its stream, unmute both. Runs in the background, gives up
 # after two minutes or when fgfs exits. (From the old aeonwave launcher, for every build now.)
@@ -763,6 +796,7 @@ while [[ "$MODE" == run && $# -gt 0 ]]; do
     --addons)      need "$@"; ADDON_LIST="$2"; shift ;;
     --no-terrasync) TERRASYNC=0 ;;
     --no-tune)     COM_TUNE=0 ;;
+    --no-memprotect) MEM_PROTECT=0 ;;
     --input)       need "$@"; INPUT="$2"; shift ;;
     --input=*)     INPUT="${1#*=}" ;;
     --no-photoscenery) PHOTOSCENERY=0 ;;
@@ -787,6 +821,14 @@ done
 
 pick_binary "$AUDIO"
 export FG_HOME="$FG_HOME_DIR"     # fgfs reads FG_HOME only from the environment
+run_fgfs() {   # exec fgfs, inside a memory-protected user scope when we can (same pid, so FFB/audio fix keep it)
+  if [[ "$MEM_PROTECT" != 0 && -n "$MEM_PROTECT" ]] && command -v systemd-run >/dev/null 2>&1 \
+     && [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/systemd/private" ]]; then
+    exec systemd-run --user --scope --quiet --collect -p "MemoryLow=$MEM_PROTECT" \
+      --unit="fgfs-mga-$$" -- "$BIN" "$@"
+  fi
+  exec "$BIN" "$@"
+}
 ARGS=()
 in_pass() { local x; for x in "${PASS[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
 LAUNCHER=0; in_pass --launcher && LAUNCHER=1
@@ -799,7 +841,7 @@ if [[ "$MODE" == raw ]]; then
   ARGS+=("${PASS[@]}")
   if (( DRY )); then print_cmd "${ARGS[@]}"; exit 0; fi
   controls_check
-  exec "$BIN" "${ARGS[@]}"
+  run_fgfs "${ARGS[@]}"
 fi
 
 [[ -n "$AIRCRAFT" ]] || AIRCRAFT="$DEFAULT_AIRCRAFT"
@@ -885,9 +927,10 @@ resolve_sink; set_quantum
 say "fgfs-mga: $AC_ID at $AIRPORT, preset $PRESET, build $AUDIO, ${#ADDON_ARGS[@]} add-on(s)$LW, input $INPUT$PHOTO$RADIO_NOTE$SINK_NOTE$FFB_NOTE"
 if (( DRY )); then print_cmd "${ARGS[@]}"; exit 0; fi
 controls_check
+wake_output
 start_audio_fix "$$"
 start_ffb "$$"
-exec "$BIN" "${ARGS[@]}"
+run_fgfs "${ARGS[@]}"
 __FGFS_MGA_LAUNCHER__
   if bash -n "$TMPN"; then chmod 755 "$TMPN"; mv -f -- "$TMPN" "$NEW"; say "Installed $NEW"
   else rm -f -- "$TMPN"; say "ERROR: launcher failed a syntax check; nothing installed."; exit 1; fi
@@ -3911,8 +3954,28 @@ def apply_theme(app):
     app.setStyleSheet(QSS)
 
 
+def arg_value(args, name):
+    """The value after `name` (or in `name=value`) in args, else None."""
+    for i, a in enumerate(args):
+        if a == name and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def run(ctl, args):
-    """Open the window. ctl is the fgfs-mga-controls module. Returns an exit code."""
+    """Open the window. ctl is the fgfs-mga-controls module. Returns an exit code.
+    --aircraft ID opens on that aircraft's settings (the FlightGear launcher passes the one it has picked).
+    Only one window at a time: a second start just says so and exits."""
+    lock = None
+    if not os.environ.get("FGFS_MGA_GUI_SHOT"):
+        run_dir = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        lock = QtCore.QLockFile(os.path.join(run_dir, "fgfs-mga-controls-gui.lock"))
+        lock.setStaleLockTime(0)
+        if not lock.tryLock(200):
+            print("The controls window is already open.")
+            return 0
     devs = ctl.find_devices("--all" in args)
     if not devs:
         print("No Saitek controller found. Plug them in and try again.")
@@ -3923,6 +3986,11 @@ def run(ctl, args):
     app.setApplicationName("fgfs-mga controls")
     apply_theme(app)
     win = Window(ctl, ses, ctl.find_aircraft(), dry="--dry-run" in args)
+    want = arg_value(args, "--aircraft")
+    if want:
+        i = win.ac.findText(want)
+        if i > 0:
+            win.ac.setCurrentIndex(i)   # pick_aircraft runs through the signal
     win.resize(1440, 900)
     win.setMinimumSize(1100, 700)
     shot = os.environ.get("FGFS_MGA_GUI_SHOT")   # test hook: save pictures of each tab, then close

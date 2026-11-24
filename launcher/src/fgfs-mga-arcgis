@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# fgfs-mga-arcgis LAT LON [HALF_DEG] [ArcGIS|USGS]
+# Downloads ArcGIS World Imagery photoscenery around a point (default +/-0.25 deg, about 30 x 25 km)
+# into ~/.fgfs/Scenery-Addons, with the same creator as the USGS pull. Tiles already there are kept.
+# Started by the FlightGear launcher's Location overlay. Log: ~/.local/share/fgfs-mga/arcgis.log
+# Esri imagery is for personal use under Esri's terms.
+LOG=$HOME/.local/share/fgfs-mga/arcgis.log
+LOCK=$HOME/.local/share/fgfs-mga/arcgis.lock
+PS=$HOME/.local/share/flightgear-photoscenery
+OUT=$HOME/.fgfs/Scenery-Addons
+lat=$1; lon=$2; half=${3:-0.25}; provider=${4:-ArcGIS}
+[[ "$provider" == ArcGIS || "$provider" == USGS ]] || { echo "provider must be ArcGIS or USGS"; exit 2; }
+[[ "$lat" =~ ^-?[0-9]+(\.[0-9]+)?$ && "$lon" =~ ^-?[0-9]+(\.[0-9]+)?$ && "$half" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "usage: $0 LAT LON [HALF_DEG]"; exit 2; }
+exec 9>"$LOCK"
+if ! flock -n 9; then echo "$(date +%T) already downloading; wait for it to finish" >> "$LOG"; exit 1; fi
+box=$(python3 -c "
+lat,lon,h=$lat,$lon,$half
+print('%.4f %.4f %.4f %.4f' % (lat-h, lon-h, lat+h, lon+h))")
+read -r latLL lonLL latUR lonUR <<<"$box"
+before=$(find "$OUT/Orthophotos" -name '*.png' 2>/dev/null | wc -l)
+{
+  echo "$(date +%T) START $provider imagery for box $latLL,$lonLL .. $latUR,$lonUR (existing tiles kept)"
+  export PATH="$HOME/.local/share/flightgear-photoscenery-venv/bin:$PATH"
+  cd "$PS" || { echo "$(date +%T) FAILED: photoscenery creator not found in $PS"; exit 1; }
+  nice -n 15 perl ./create_bbox.pl --latLL "$latLL" --lonLL "$lonLL" --latUR "$latUR" --lonUR "$lonUR" -- \
+       --provider "$provider" --scenery_folder "$OUT" 2>&1 | grep -v '^\s*$' | tail -n 40
+  after=$(find "$OUT/Orthophotos" -name '*.png' 2>/dev/null | wc -l)
+  echo "$(date +%T) DONE: $((after - before)) new photo tiles ($after in total). Restart FlightGear to see them."
+} >> "$LOG" 2>&1

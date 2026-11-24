@@ -1,4 +1,6 @@
+src/GUI/assets/mga-region-map.svg
+src/GUI/qml/Controls.qml
+src/GUI/qml/MgaPreflight.js
+src/GUI/qml/Training.qml
 src/GUI/TrainingStatsModel.cxx
 src/GUI/TrainingStatsModel.hxx
-src/GUI/assets/mga-region-map.svg
-src/GUI/qml/Training.qml

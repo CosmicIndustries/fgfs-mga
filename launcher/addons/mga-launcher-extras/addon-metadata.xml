@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PropertyList>
+    <meta>
+        <file-type type="string">FlightGear add-on metadata</file-type>
+        <format-version type="int">1</format-version>
+    </meta>
+    <addon>
+        <identifier type="string">org.cosmicindustries.mga-launcher-extras</identifier>
+        <name type="string">MGA launcher extras</name>
+        <version type="string">1.0.0</version>
+        <authors>
+            <author>
+                <name type="string">fgfs-mga</name>
+            </author>
+        </authors>
+        <short-description type="string">Applies the launcher's fuel, payload, failure, seat and altimeter choices at start.</short-description>
+        <long-description type="string">Loaded by the fgfs-mga FlightGear launcher. It reads /sim/mga-extras/* set by the launcher's Settings page and applies them once the flight model is ready. Choices left at Preset are not touched.</long-description>
+        <license>
+            <designation type="string">GNU GPL version 2 or later</designation>
+        </license>
+        <min-FG-version type="string">2024.1.0</min-FG-version>
+    </addon>
+</PropertyList>

@@ -50,6 +50,19 @@ Left alone: `/usr/local/bin/fgfs` and the three system FlightGear menu entries (
 Archived by `archive-downloads.sh`: the old `fgfs-mga-training` copy (KCON + R44), `fg_aeonwave_3124_compat_build.sh`, `fg_aeonwave_3124_zeroxml_fix.sh`, `fg_aeonwave_audio_triage.sh` (all aimed at a `build-aeonwave-3124` folder that's no longer on the board), `fg_aircraft_launcher_cleanup.py`, `fg_aircraft_search_path_dedup.py`, `fg_aircraft_sweeper.py`, and the `cosmicindustries.github.io-*.log`.
 Kept: the four `patch_launcher_*.py` (needed again if the FG source is reset), and `FG_INTEGRATION_README.md`, `fg_telemetry_out.xml`, `fg_weather_in.xml`.
 
+## 1.3.0 (Nov 24): FlightGear launcher pages
+
+These live in the FlightGear source patch (`flightgear-2024.1.7/`), so they arrive with the rebuilt `fgfs`.
+
+- **Controls page** (sidebar): opens `fgfs-mga controls gui` on the selected aircraft, shows the stick check and the saved bindings.
+- **Settings**: every section opens expanded, plus Graphics detail, Sound, Traffic/cockpit/input, Fuel & payload (with an empty weight and arm for a live weight-and-balance check), Failures, Radios & instruments, View & detail, Assists & start state (engine running, unlimited fuel, reset after a crash, auto mixture), Traffic detail, Takeoff & landing numbers (POH base figures), Instructor panel & recording (web panel on port 8099, continuous flight recording to `~/.fgfs/Recordings`).
+- **Environment**: Wind & turbulence, Clouds/visibility/precipitation, Weather layers (temperature, dew point spread, altimeter, two cloud layers above the field, winds aloft), Season & ground. Any override builds one METAR for the flight and turns real-world weather off.
+- **Location**: an overlay on the airport view with a street / topo / satellite / VFR sectional map, METAR, density altitude, the best runway for the wind, runways and frequencies, FAA charts (current d-TPP cycle worked out locally) and ArcGIS or USGS photo scenery downloads (`src/fgfs-mga-arcgis`).
+- **Summary**: a "Before you fly" panel: board memory and temperature, stick check, weather source and METAR, density altitude and runway wind, weight and balance, takeoff and landing estimates, sunrise, sunset and the night-currency window, scenery for the field, the instructor panel address, the aircraft checklist, and saved setups (`~/.config/fgfs-mga/setups`).
+- **Help**: a Donate to FlightGear button.
+- `addons/mga-launcher-extras`: the FlightGear add-on that applies the launcher's fuel, payload, failure, seat, altimeter, start-state, crash-reset and auto-mixture choices. Copy it to `~/.fgfs/fgfs-mga-addons/mga-launcher-extras`; `src/fgfs-mga-arcgis` goes to `~/.local/share/fgfs-mga/tools/`.
+- Also fixes an upstream launcher bug: `LaunchConfig::getValueForKey` never closed its settings group, so named groups nested on every read.
+
 ## 1.2.0 (Nov 21)
 
 - Add-ons: searched in `~/.fgfs/Addons`, `fgdata/Addons`, `~/.fgfs/FlightGear-2024.1-Addons-MGA` (so Logbook = v2.1.0, plus landing_rate and which-runway). One add-on per id. With `--launcher`, add-ons the launcher window already loads (its ini `[addon-modules]`) are skipped: that double load was the launcher crash, not FlightGear auto-loading.

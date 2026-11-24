@@ -1136,8 +1136,28 @@ def apply_theme(app):
     app.setStyleSheet(QSS)
 
 
+def arg_value(args, name):
+    """The value after `name` (or in `name=value`) in args, else None."""
+    for i, a in enumerate(args):
+        if a == name and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def run(ctl, args):
-    """Open the window. ctl is the fgfs-mga-controls module. Returns an exit code."""
+    """Open the window. ctl is the fgfs-mga-controls module. Returns an exit code.
+    --aircraft ID opens on that aircraft's settings (the FlightGear launcher passes the one it has picked).
+    Only one window at a time: a second start just says so and exits."""
+    lock = None
+    if not os.environ.get("FGFS_MGA_GUI_SHOT"):
+        run_dir = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        lock = QtCore.QLockFile(os.path.join(run_dir, "fgfs-mga-controls-gui.lock"))
+        lock.setStaleLockTime(0)
+        if not lock.tryLock(200):
+            print("The controls window is already open.")
+            return 0
     devs = ctl.find_devices("--all" in args)
     if not devs:
         print("No Saitek controller found. Plug them in and try again.")
@@ -1148,6 +1168,11 @@ def run(ctl, args):
     app.setApplicationName("fgfs-mga controls")
     apply_theme(app)
     win = Window(ctl, ses, ctl.find_aircraft(), dry="--dry-run" in args)
+    want = arg_value(args, "--aircraft")
+    if want:
+        i = win.ac.findText(want)
+        if i > 0:
+            win.ac.setCurrentIndex(i)   # pick_aircraft runs through the signal
     win.resize(1440, 900)
     win.setMinimumSize(1100, 700)
     shot = os.environ.get("FGFS_MGA_GUI_SHOT")   # test hook: save pictures of each tab, then close
