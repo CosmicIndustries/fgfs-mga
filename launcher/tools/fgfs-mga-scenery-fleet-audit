@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+FG_HOME="${FG_HOME:-$HOME/.fgfs}"
+FG_ROOT="${FG_ROOT:-$FG_HOME/fgdata_2024_1}"
+FG_SCENERY="${FG_SCENERY:-$FG_HOME/TerraSync:$FG_ROOT/Scenery}"
+AIRCRAFT_ROOT="$FG_HOME/Aircraft"
+mkdir -p "$FG_HOME/MGA"
+OUT="$FG_HOME/MGA/fleet-scenery-audit-$(date +%Y%m%d-%H%M%S).txt"
+{
+ echo "MGA Flight Operations · aircraft/scenery audit"
+ echo "Date: $(date -Is)"
+ echo "FG_HOME=$FG_HOME"
+ echo "FG_ROOT=$FG_ROOT"
+ echo "FG_SCENERY=$FG_SCENERY"
+ echo
+ echo "MGA reference fleet (official fleet list; simulator equivalents must be verified individually):"
+ for x in "Piper PA-28-161 Warrior III|PA-28-161|primary trainer" "Piper PA-28-181 Archer TX|PA-28-181|advanced trainer" "Piper PA-28R-201 Arrow III|PA-28R-201|complex single" "Piper PA-44-180 Seminole|PA-44-180|multi-engine" "American Champion Citabria|7ECA family|tailwheel/spin" "American Champion Super Decathlon|8KCAB|aerobatic/spin" "Guimbal Cabri G2|Cabri G2|helicopter" "Robinson R44|R44|helicopter"; do
+  IFS='|' read -r name type role <<< "$x"
+  printf '\n%-39s | %-16s | %s\n' "$name" "$type" "$role"
+  case "$type" in
+    PA-28-161) pat='PA28|Warrior' ;; PA-28-181) pat='Archer|PA28' ;; PA-28R-201) pat='Arrow|PA28R' ;; PA-44-180) pat='PA44|Seminole' ;; '7ECA family') pat='Citabria' ;; 8KCAB) pat='Decathlon' ;; 'Cabri G2') pat='Cabri' ;; R44) pat='R44|Robinson' ;; esac
+  found=0
+  if [[ -d "$AIRCRAFT_ROOT" ]]; then
+   while IFS= read -r -d '' f; do
+    printf '  installed candidate: %s\n' "${f#"$AIRCRAFT_ROOT"/}"
+    found=1
+   done < <(find "$AIRCRAFT_ROOT" -mindepth 2 -maxdepth 4 -type f \( -name '*.xml' -o -name '*.set' \) -print0 2>/dev/null | grep -zEi "$pat" || true)
+  fi
+  [[ $found -eq 1 ]] || echo "  no obvious local candidate found (not proof no compatible model exists)"
+ done
+ echo
+ echo "Scenery checks for requested operating areas:"
+ for airport in PAHO KMCN KBQK; do
+  echo "--- $airport"
+  echo "TerraSync directory: $FG_HOME/TerraSync"
+  if [[ -d "$FG_HOME/TerraSync" ]]; then
+   find "$FG_HOME/TerraSync" -maxdepth 5 -type f \( -iname "*${airport}*" -o -iname "*${airport,,}*" \) -print 2>/dev/null | head -15 || true
+   echo "Note: TerraSync stores terrain/objects by geographic tile; airport-name search may return nothing even when scenery is present."
+  else
+   echo "TerraSync cache not yet present; FlightGear can create/update it during a flight when automatic scenery download is enabled."
+  fi
+ done
+ echo
+ echo "Safe next step: launch each airport once with automatic scenery downloads enabled and allow TerraSync to finish; do not delete cache directories to force refresh."
+ echo "PAHO = Homer, Alaska; KMCN = Middle Georgia Regional (MGA area); KBQK = Brunswick Golden Isles."
+} | tee "$OUT"
+echo "Report: $OUT"

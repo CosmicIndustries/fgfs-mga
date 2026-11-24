@@ -717,16 +717,20 @@ fi
 [[ -n "$AIRCRAFT" ]] || AIRCRAFT="$DEFAULT_AIRCRAFT"
 [[ -n "$PRESET" ]] || PRESET="$DEFAULT_PRESET"
 if ! resolve_aircraft "$AIRCRAFT"; then
-  if fleet_map "$AIRCRAFT" >/dev/null; then
-    die "$AIRCRAFT isn't installed (looked for folder $(fleet_map "$AIRCRAFT" | cut -d' ' -f1) in $AIRCRAFT_DIRS). Add it to MGA_FLEET in install-mga-fleet.sh."
+  if (( LAUNCHER )); then   # a fresh install: open the launcher window anyway, its Aircraft page installs aircraft
+    warn "$AIRCRAFT isn't installed yet, so the launcher opens without it (pick or install one on its Aircraft page)"
+  elif fleet_map "$AIRCRAFT" >/dev/null; then
+    die "$AIRCRAFT isn't installed (looked for folder $(fleet_map "$AIRCRAFT" | cut -d' ' -f1) in $AIRCRAFT_DIRS). Install it from the launcher's Aircraft page (fgfs-mga --launcher), or see: fgfs-mga list"
+  else
+    die "aircraft '$AIRCRAFT' not found. Try: fgfs-mga list"
   fi
-  die "aircraft '$AIRCRAFT' not found. Try: fgfs-mga list"
 fi
 PRESET_ARGS=()
 preset_args "$PRESET"
 
-ARGS+=("--fg-root=$FG_ROOT_DIR" "--fg-scenery=$FG_SCENERY_DIRS" "--fg-aircraft=$AIRCRAFT_DIRS"
-       "--aircraft-dir=$AC_DIR" "--aircraft=$AC_ID" "--airport=$AIRPORT")
+ARGS+=("--fg-root=$FG_ROOT_DIR" "--fg-scenery=$FG_SCENERY_DIRS" "--fg-aircraft=$AIRCRAFT_DIRS")
+[[ -n "$AC_ID" ]] && ARGS+=("--aircraft-dir=$AC_DIR" "--aircraft=$AC_ID")
+ARGS+=("--airport=$AIRPORT")
 [[ -n "$RUNWAY" ]] && ARGS+=("--runway=$RUNWAY")
 if (( TERRASYNC )); then ARGS+=(--enable-terrasync); else ARGS+=(--disable-terrasync); fi
 ARGS+=("${PRESET_ARGS[@]}")
@@ -794,7 +798,7 @@ drop_empty_props
 
 LW=""; (( LAUNCHER )) && LW=" (plus the ones the launcher window loads)"
 resolve_sink; set_quantum
-say "fgfs-mga: $AC_ID at $AIRPORT, preset $PRESET, build $AUDIO, ${#ADDON_ARGS[@]} add-on(s)$LW, input $INPUT$PHOTO$RADIO_NOTE$SINK_NOTE$FFB_NOTE"
+say "fgfs-mga: ${AC_ID:-no aircraft yet} at $AIRPORT, preset $PRESET, build $AUDIO, ${#ADDON_ARGS[@]} add-on(s)$LW, input $INPUT$PHOTO$RADIO_NOTE$SINK_NOTE$FFB_NOTE"
 if (( DRY )); then print_cmd "${ARGS[@]}"; exit 0; fi
 controls_check
 wake_output

@@ -98,7 +98,7 @@ index a0a46e6f8..cb6261415 100644
  }
  
 diff --git a/src/GUI/LauncherController.cxx b/src/GUI/LauncherController.cxx
-index 3ad5fd298..522a9f992 100644
+index 3ad5fd298..d8df1d6b4 100644
 --- a/src/GUI/LauncherController.cxx
 +++ b/src/GUI/LauncherController.cxx
 @@ -11,9 +11,30 @@
@@ -487,7 +487,7 @@ index 3ad5fd298..522a9f992 100644
  bool LauncherController::validateMetarString(QString metar)
  {
      if (metar.isEmpty()) {
-@@ -1060,3 +1415,534 @@ void LauncherController::onReachabilityChanged()
+@@ -1060,3 +1415,539 @@ void LauncherController::onReachabilityChanged()
      emit networkAvailableChanged();
  #endif
  }
@@ -1012,6 +1012,11 @@ index 3ad5fd298..522a9f992 100644
 +    return r;
 +}
 +
++QString LauncherController::homePath() const
++{
++    return QDir::homePath();
++}
++
 +bool LauncherController::openPath(QString path) const
 +{
 +    // only folders under the user's own FlightGear and fgfs-mga folders
@@ -1023,7 +1028,7 @@ index 3ad5fd298..522a9f992 100644
 +    return QDesktopServices::openUrl(QUrl::fromLocalFile(clean));
 +}
 diff --git a/src/GUI/LauncherController.hxx b/src/GUI/LauncherController.hxx
-index a5ae99e09..a4842a976 100644
+index a5ae99e09..566a14474 100644
 --- a/src/GUI/LauncherController.hxx
 +++ b/src/GUI/LauncherController.hxx
 @@ -10,6 +10,7 @@
@@ -1050,7 +1055,7 @@ index a5ae99e09..a4842a976 100644
  
      Q_PROPERTY(bool canFly READ canFly NOTIFY canFlyChanged)
  
-@@ -91,6 +94,38 @@ public:
+@@ -91,6 +94,39 @@ public:
      void initQML(int& styleTypeId);
  
      Q_INVOKABLE bool validateMetarString(QString metar);
@@ -1086,10 +1091,11 @@ index a5ae99e09..a4842a976 100644
 +    Q_INVOKABLE QString aircraftChecklistText() const;
 +    Q_INVOKABLE QVariantMap sceneryStatus() const;
 +    Q_INVOKABLE bool openPath(QString path) const;
++    Q_INVOKABLE QString homePath() const;
  
      Q_INVOKABLE void requestInstallUpdate(QUrl aircraftUri);
  
-@@ -218,6 +253,12 @@ public:
+@@ -218,6 +254,12 @@ public:
  
      bool isNetworkAvailable() const;
  signals:
@@ -1102,7 +1108,7 @@ index a5ae99e09..a4842a976 100644
  
      void selectedAircraftChanged(QUrl selectedAircraft);
      void selectedAircraftStateChanged();
-@@ -316,6 +357,7 @@ private:
+@@ -316,6 +358,7 @@ private:
      QStringList m_settingsSummary, m_environmentSummary;
      RecentAircraftModel* m_aircraftHistory = nullptr;
      RecentLocationsModel* m_locationHistory = nullptr;
@@ -2299,7 +2305,7 @@ index f16399856..89962bbb0 100644
  
      Rectangle {
 diff --git a/src/GUI/qml/Settings.qml b/src/GUI/qml/Settings.qml
-index 09cd0bc95..28ea47b30 100644
+index 09cd0bc95..520da685e 100644
 --- a/src/GUI/qml/Settings.qml
 +++ b/src/GUI/qml/Settings.qml
 @@ -6,10 +6,38 @@ import QtQuick.Controls 2.2
@@ -2396,11 +2402,11 @@ index 09cd0bc95..28ea47b30 100644
 +                                }
 +                                Button {
 +                                    text: qsTr("Open Event profiles")
-+                                    onClicked: Qt.openUrlExternally("file:///home/radxa/.fgfs/Input/Event/Saitek/")
++                                    onClicked: _launcher.openPath(_launcher.homePath() + "/.fgfs/Input/Event/Saitek")
 +                                }
 +                                Button {
 +                                    text: qsTr("Open setup utility folder")
-+                                    onClicked: Qt.openUrlExternally("file:///home/radxa/.local/bin/")
++                                    onClicked: Qt.openUrlExternally("file://" + _launcher.homePath() + "/.local/bin/")
 +                                }
 +                            }
 +                        }
@@ -3188,7 +3194,7 @@ index 09cd0bc95..28ea47b30 100644
 +                            text: qsTr("Open recordings folder")
 +                            height: Style.strutSize * 0.72
 +                            font.pixelSize: Style.baseFontPixelSize
-+                            onClicked: _launcher.openPath("/home/radxa/.fgfs/Recordings")
++                            onClicked: _launcher.openPath(_launcher.homePath() + "/.fgfs/Recordings")
 +                        }
 +                    }
 +                ]
@@ -3197,7 +3203,7 @@ index 09cd0bc95..28ea47b30 100644
 +                    if (mgaInstructor.checked) _config.setArg("httpd", "8099");
 +                    if (mgaRecord.checked) {
 +                        _config.setProperty("/sim/replay/record-continuous", true);
-+                        _config.setProperty("/sim/replay/tape-directory", "/home/radxa/.fgfs/Recordings");
++                        _config.setProperty("/sim/replay/tape-directory", _launcher.homePath() + "/.fgfs/Recordings");
 +                    }
 +                }
 +            }

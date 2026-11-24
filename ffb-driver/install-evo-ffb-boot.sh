@@ -6,7 +6,7 @@
 # (it's skipped, the board still boots) until it's rebuilt with build-evo-ffb.sh.
 set -e
 [ "$(id -u)" = 0 ] || { echo "run it with sudo"; exit 1; }
-KO=/home/radxa/builds/saitek-ffb/evo-cyborg-v2/hid_universal_pidff.ko   # v2: failed loads clean up after themselves
+KO="$(cd "$(dirname "$0")" && pwd)/evo-cyborg-v2/hid_universal_pidff.ko"   # built next to this script by build-evo-cyborg-v2.sh; v2: failed loads clean up after themselves
 DEST=/lib/modules/$(uname -r)/extra/hid_universal_pidff.ko
 CONF=/etc/modules-load.d/evo-ffb.conf
 

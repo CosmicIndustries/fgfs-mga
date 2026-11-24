@@ -1,0 +1,42 @@
+#!/bin/bash
+# Compressed photo scenery: DXT1 .dds copies of the orthophoto .png tiles (about 1/8 of the GPU memory).
+# FlightGear prefers <tile>.dds over <tile>.png in Orthophotos/. Needs ImageMagick (convert).
+#   fgfs-mga-photo-dds make   make the .dds copies in a staging folder (nothing in Orthophotos/ changes)
+#   fgfs-mga-photo-dds on     copy them next to the .png tiles, so FlightGear loads them
+#   fgfs-mga-photo-dds off    undo "on": remove only the .dds copies it put there; the .png tiles stay
+set -u
+ORTHO="${ORTHO_DIR:-$HOME/.fgfs/Scenery-Addons/Orthophotos}"
+STAGE="${ORTHO}-dds-staging"
+case "${1:-}" in
+  make)
+    command -v convert >/dev/null || { echo "needs ImageMagick (convert)"; exit 1; }
+    cd "$ORTHO" || { echo "no photo scenery at $ORTHO"; exit 1; }
+    mkdir -p "$STAGE"; rm -f "$STAGE/.done"
+    n=0; t0=$(date +%s)
+    while read -r f; do
+      o="$STAGE/${f%.png}.dds"
+      [[ -s "$o" ]] && continue
+      mkdir -p "$(dirname "$o")"
+      nice -n 19 convert "$f" -define dds:compression=dxt1 -define dds:mipmaps=12 "DDS:$o.tmp" && mv "$o.tmp" "$o"
+      n=$((n+1)); echo "$(date +%T) $n $f $(stat -c %s "$o" 2>/dev/null)"
+    done < <(find . -name '*.png' | sort)
+    touch "$STAGE/.done"
+    echo "DONE in $(( $(date +%s) - t0 )) s" ;;
+  on)
+    pgrep -x fgfs >/dev/null && { echo "close FlightGear first"; exit 1; }
+    [[ -f "$STAGE/.done" ]] || { echo "run '$0 make' first (or wait for it to finish)"; exit 1; }
+    n=0; cd "$STAGE" || exit 1
+    while read -r f; do
+      [[ -e "$ORTHO/${f%.dds}.png" ]] || continue
+      cp "$f" "$ORTHO/$f" && n=$((n+1))
+    done < <(find . -name '*.dds')
+    echo "photo tiles now compressed: $n" ;;
+  off)
+    pgrep -x fgfs >/dev/null && { echo "close FlightGear first"; exit 1; }
+    n=0; cd "$STAGE" || exit 1
+    while read -r f; do
+      [[ -e "$ORTHO/$f" && -e "$ORTHO/${f%.dds}.png" ]] && cmp -s "$f" "$ORTHO/$f" && rm "$ORTHO/$f" && n=$((n+1))
+    done < <(find . -name '*.dds')
+    echo "removed compressed copies: $n (original .png tiles untouched)" ;;
+  *) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

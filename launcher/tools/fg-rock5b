@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+usage() {
+  cat <<'EOF'
+Usage: fg-rock5b [low|balanced|visual] [additional fgfs arguments...]
+Opens FlightGear's built-in Qt launcher with the selected ROCK 5B profile.
+Default profile: balanced
+Examples:
+  fg-rock5b
+  fg-rock5b low
+  fg-rock5b visual
+EOF
+}
+
+PROFILE="balanced"
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
+case "${1:-}" in
+  low|balanced|visual) PROFILE="$1"; shift ;;
+esac
+CONF="$HOME/.config/flightgear-rock5b/perf-${PROFILE}.conf"
+if ! command -v fgfs >/dev/null 2>&1; then
+  echo "ERROR: fgfs is not on PATH. Install/repair FlightGear using your normal package source, then rerun this command." >&2
+  exit 127
+fi
+exec fgfs --launcher --config="$CONF" "$@"

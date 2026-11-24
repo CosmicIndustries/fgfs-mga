@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+BIN="${FG_TEST_BIN:-$HOME/builds/flightgear/build/src/Main/fgfs}"
+[[ -x "$BIN" ]] || { echo "Test binary missing; run fgfs-mga-update build first." >&2; exit 1; }
+LOGDIR="$HOME/Documents/MGA-FlightGear-Exact/reports"
+mkdir -p "$LOGDIR"
+LOG="$LOGDIR/fgfs-joystick-event-$(date +%Y%m%d-%H%M%S).log"
+HOME_FG="${FG_HOME:-$HOME/.fgfs}"; ROOT_FG="${FG_ROOT:-$HOME_FG/fgdata_2024_1}"
+export FG_HOME="$HOME_FG" FG_ROOT="$ROOT_FG" FG_SCENERY="${FG_SCENERY:-$HOME_FG/TerraSync:$ROOT_FG/Scenery}"
+echo "Input debug log: $LOG"
+set +e
+"$BIN" --launcher --prop:bool:/sim/input/no-event-input=false --prop:bool:/sim/input/no-joystick-input=true --log-class=input --log-level=debug 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}; set -e
+exit "$rc"

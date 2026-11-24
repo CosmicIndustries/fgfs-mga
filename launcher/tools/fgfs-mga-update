@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Safe source builder/updater: no sudo, no installation to /usr/local/bin.
+set -Eeuo pipefail
+FG="${FG_SOURCE_DIR:-$HOME/builds/flightgear}"
+FG_BUILD="${FG_BUILD_DIR:-$FG/build}"
+SIM="${SIMGEAR_SOURCE_DIR:-$HOME/builds/simgear}"
+SIM_BUILD="${SIMGEAR_BUILD_DIR:-$SIM/build}"
+JOBS="${FG_BUILD_JOBS:-2}"
+LOGDIR="$HOME/Documents/MGA-FlightGear-Exact/reports"
+mkdir -p "$LOGDIR"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG="$LOGDIR/source-update-$STAMP.log"
+mode="${1:-build}"
+usage() { echo 'Usage: fgfs-mga-update [build|update|status]'; }
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo 'FG_BUILD_JOBS must be a positive integer.' >&2; exit 2; }
+[[ -d "$FG/.git" && -f "$FG_BUILD/CMakeCache.txt" ]] || { echo "FlightGear source/build not found: $FG / $FG_BUILD" >&2; exit 1; }
+if [[ "$mode" == status ]]; then
+  echo "FlightGear: $FG"; git -C "$FG" status --short --branch
+  if [[ -d "$SIM/.git" ]]; then echo "SimGear: $SIM"; git -C "$SIM" status --short --branch; fi
+  echo "Current source-build binary expected: $FG_BUILD/src/Main/fgfs"; exit 0
+fi
+if [[ "$mode" == update ]]; then
+  # Only update clean working trees: never stash or overwrite the user's QML/C++ customization.
+  for repo in "$SIM" "$FG"; do
+    [[ -d "$repo/.git" ]] || continue
+    if [[ -n "$(git -C "$repo" status --porcelain)" ]]; then
+      echo "Refusing source update: $repo has uncommitted changes." >&2
+      git -C "$repo" status --short >&2
+      echo 'Use the build command to compile the current working tree. Commit/stash your work manually before a source update.' >&2
+      exit 3
+    fi
+    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    [[ -n "$upstream" ]] || { echo "No upstream configured for $repo; refusing to guess branch/remote." >&2; exit 4; }
+  done
+  for repo in "$SIM" "$FG"; do
+    [[ -d "$repo/.git" ]] || continue
+    echo "Fetching $repo"
+    git -C "$repo" fetch --prune
+    git -C "$repo" merge --ff-only '@{u}'
+  done
+elif [[ "$mode" != build ]]; then usage; exit 2
+fi
+set +e
+{
+  echo "Started: $(date -Is)"; echo "Mode: $mode"; echo "FlightGear source: $FG"; echo "Jobs: $JOBS"
+  # Some source trees have no standalone SimGear CMake build tree (or a stale
+  # directory without a readable cache). Do not fail before the configured
+  # FlightGear build has a chance to build its actual dependencies.
+  if [[ -f "$SIM_BUILD/CMakeCache.txt" ]] && grep -q '^CMAKE_HOME_DIRECTORY:INTERNAL=' "$SIM_BUILD/CMakeCache.txt"; then
+    echo '=== Building standalone SimGear tree ==='
+    if ! cmake --build "$SIM_BUILD" --parallel "$JOBS"; then
+      echo "WARNING: standalone SimGear build failed; continuing with the configured FlightGear build tree. See log: $LOG"
+    fi
+  else
+    echo "Skipping standalone SimGear build: no valid CMake cache at $SIM_BUILD"
+    echo 'The configured FlightGear build tree will resolve/build its own dependencies.'
+  fi
+  echo '=== Building FlightGear test executable ==='
+  cmake --build "$FG_BUILD" --target fgfs --parallel "$JOBS" || exit $?
+  BIN="$FG_BUILD/src/Main/fgfs"
+  if [[ ! -x "$BIN" ]]; then BIN="$(find "$FG_BUILD" -type f -name fgfs -executable -print -quit 2>/dev/null || true)"; fi
+  [[ -n "$BIN" && -x "$BIN" ]] || { echo 'Build ended but no executable fgfs was found.' >&2; exit 1; }
+  echo "SUCCESS: $BIN"
+  echo "Installed FlightGear remains unchanged: /usr/local/bin/fgfs is not replaced."
+  echo "Finished: $(date -Is)"
+} 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}
+set -e
+echo "Build log: $LOG"
+exit "$rc"

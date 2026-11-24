@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+export PIPEWIRE_LATENCY="256/48000"
+
+PREFIX="${AEONWAVE_PREFIX:-$HOME/builds/aeonwave-prefix}"
+SRC="$HOME/.local/share/aeonwave/aeonwave-output-test.c"
+BIN="$HOME/.local/share/aeonwave/aeonwave-output-test"
+DEVICE="${1:-PulseAudio on default}"
+
+cc -std=c11 -O2 \
+  -I"$PREFIX/include" \
+  "$SRC" \
+  -L"$PREFIX/lib/aarch64-linux-gnu" \
+  -Wl,-rpath,"$PREFIX/lib/aarch64-linux-gnu" \
+  -laax -o "$BIN"
+
+echo "=== PipeWire sink before test ==="
+pactl get-default-sink || true
+pactl list short sinks || true
+echo "=== Enabling ROCK 5B ES8316 codec output path ==="
+enable_codec_output() {
+  amixer -c 4 sset 'Headphone Mixer' 100% >/dev/null 2>&1 || true
+  amixer -c 4 sset 'Left DAC' on >/dev/null 2>&1 || true
+  amixer -c 4 sset 'Right DAC' on >/dev/null 2>&1 || true
+  amixer -c 4 cset "name='Headphone Switch'" on >/dev/null 2>&1 || true
+  amixer -c 4 sset 'Headphone' 100% unmute >/dev/null 2>&1 || true
+  amixer -c 4 sset 'Speaker' on >/dev/null 2>&1 || true
+  amixer -c 4 cset "name='Speaker Switch'" on >/dev/null 2>&1 || true
+  amixer -c 4 sset 'DAC' 100% >/dev/null 2>&1 || true
+}
+enable_codec_output
+echo "=== Running AeonWave outside FlightGear ==="
+"$BIN" "$DEVICE" &
+test_pid=$!
+
+for _ in $(seq 1 30); do
+  if ! kill -0 "$test_pid" 2>/dev/null; then
+    break
+  fi
+  enable_codec_output
+  pactl list short sink-inputs 2>/dev/null | tail -5 || true
+  sleep 1
+done
+
+wait "$test_pid"

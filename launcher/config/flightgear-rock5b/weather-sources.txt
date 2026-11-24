@@ -1,0 +1,4 @@
+GOES-19 Southeast GeoColor loop (NOAA): https://www.goes.noaa.gov/sector_band.php?band=GEOCOLOR&length=12&sat=G19&sector=se&src=nav
+GOES-19 Full Disk GeoColor loop (NOAA): https://www.goes.noaa.gov/fulldisk_band.php?band=GEOCOLOR&length=12&sat=G19
+GOES-18 Full Disk GeoColor loop (NOAA): https://www.goes.noaa.gov/fulldisk_band.php?band=GEOCOLOR&length=12&sat=G18
+NOTE: imagery availability/endpoints may change. GOES views are cloud imagery, not radar/METAR/TAF or a simulator-weather injection.

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+FGFS="$HOME/builds/flightgear/build/src/Main/fgfs"
+FGROOT="$HOME/.fgfs/fgdata_2024_1"
+FGHOME="$HOME/.fgfs"
+
+if [[ ! -x "$FGFS" ]]; then
+    echo "ERROR: Edited FlightGear executable not found:"
+    echo "$FGFS"
+    exit 1
+fi
+
+if [[ ! -d "$FGROOT" ]]; then
+    echo "ERROR: FlightGear data directory not found:"
+    echo "$FGROOT"
+    exit 1
+fi
+
+mkdir -p "$FGHOME"
+
+exec env -u FG_ROOT \
+    FG_HOME="$FGHOME" \
+    "$FGFS" \
+    --fg-root="$FGROOT" \
+    --launcher \
+    "$@"

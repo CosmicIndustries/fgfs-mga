@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Launch test FlightGear with Linux Event input enabled for these two Saitek devices.
+set -Eeuo pipefail
+BIN="${FG_TEST_BIN:-$HOME/builds/flightgear/build/src/Main/fgfs}"
+if [[ ! -x "$BIN" ]]; then
+  BIN="$(find "$HOME/builds/flightgear/build" -type f -name fgfs -executable -print -quit 2>/dev/null || true)"
+fi
+if [[ -z "$BIN" || ! -x "$BIN" ]]; then
+  echo "ERROR: test fgfs binary not found under $HOME/builds/flightgear/build" >&2
+  exit 1
+fi
+REPORT_DIR="$HOME/Documents/MGA-FlightGear-Exact/reports"
+mkdir -p "$REPORT_DIR"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+LOG="$REPORT_DIR/flightgear-event-input-launch-$STAMP.log"
+echo "Launching: $BIN --launcher"
+echo "Linux Event input: enabled; legacy joystick and USB-HID input disabled for this profile."
+echo "Input debug log: $LOG"
+set +e
+"$BIN" --launcher \
+  --prop:bool:/sim/input/no-event-input=false \
+  --prop:bool:/sim/input/no-joystick-input=true \
+  --prop:bool:/sim/input/no-hid-input=true \
+  --log-class=input --log-level=debug 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}
+set -e
+echo "FlightGear exit code: $rc"
+echo "Log saved: $LOG"
+exit "$rc"
