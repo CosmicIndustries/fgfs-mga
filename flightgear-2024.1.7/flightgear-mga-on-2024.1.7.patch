@@ -1539,7 +1539,7 @@ index 58d1111b1..51fa54305 100644
  
      Component.onCompleted:
 diff --git a/src/GUI/qml/Location.qml b/src/GUI/qml/Location.qml
-index 3f0ce7630..5cf17848f 100644
+index 3f0ce7630..b801914f6 100644
 --- a/src/GUI/qml/Location.qml
 +++ b/src/GUI/qml/Location.qml
 @@ -2,11 +2,125 @@ import QtQuick 2.4
@@ -1820,7 +1820,7 @@ index 3f0ce7630..5cf17848f 100644
 +        anchors.rightMargin: Style.margin
 +        anchors.topMargin: Style.margin / 2
 +        width: Math.min(460, root.width * 0.42)
-+        height: root.mgaOverlayOpen ? Math.min(mgaOverlayColumn.implicitHeight + Style.margin * 2, root.height * 0.62)
++        height: root.mgaOverlayOpen ? Math.min(mgaOverlayColumn.implicitHeight + Style.margin * 2, root.height * 0.8)
 +                                    : mgaOverlayHeader.height + Style.margin * 2
 +        color: Style.panelBackground
 +        opacity: 0.96
@@ -1864,6 +1864,60 @@ index 3f0ce7630..5cf17848f 100644
 +                }
 +            }
 +
++            Flow {
++                visible: root.mgaOverlayOpen
++                width: parent.width
++                spacing: Style.margin / 2
++                Button {
++                    text: qsTr("Charts (FAA)")
++                    height: Style.strutSize * 0.72
++                    font.pixelSize: Style.baseFontPixelSize
++                    onClicked: {
++                        root.mgaChartsNote = qsTr("Looking up the current chart cycle…");
++                        _launcher.requestFaaCharts(root.mgaField.ident);
++                    }
++                }
++                Button {
++                    text: qsTr("Download ArcGIS photo scenery")
++                    height: Style.strutSize * 0.72
++                    font.pixelSize: Style.baseFontPixelSize
++                    onClicked: {
++                        root.mgaPhotoNote = _launcher.startPhotoDownload("ArcGIS", 0.15)
++                            ? qsTr("Downloading about 30 × 30 km of ArcGIS imagery around %1…").arg(root.mgaField.ident)
++                            : qsTr("Couldn't start the photo scenery download.");
++                    }
++                }
++                Button {
++                    text: qsTr("Download USGS photo scenery")
++                    height: Style.strutSize * 0.72
++                    font.pixelSize: Style.baseFontPixelSize
++                    onClicked: {
++                        root.mgaPhotoNote = _launcher.startPhotoDownload("USGS", 0.15)
++                            ? qsTr("Downloading about 30 × 30 km of USGS imagery around %1…").arg(root.mgaField.ident)
++                            : qsTr("Couldn't start the photo scenery download.");
++                    }
++                }
++            }
++            StyledText {
++                visible: root.mgaOverlayOpen && root.mgaChartsNote !== ""
++                width: parent.width
++                wrapMode: Text.WordWrap
++                text: root.mgaChartsNote
++            }
++            StyledText {
++                visible: root.mgaOverlayOpen && root.mgaPhotoNote !== ""
++                width: parent.width
++                wrapMode: Text.WordWrap
++                text: root.mgaPhotoNote + qsTr("\nTiles you already have are kept. New tiles appear on the next start. ArcGIS imagery is Esri's, for personal use.")
++            }
++            Timer {
++                interval: 3000
++                repeat: true
++                running: root.mgaOverlayOpen && root.mgaPhotoNote !== "" && mgaOverlay.visible
++                onTriggered: {
++                    var st = _launcher.photoDownloadStatus();
++                    if (st !== "") root.mgaPhotoNote = st;
++                }
 +            Item {
 +                id: mgaMapView
 +                visible: root.mgaOverlayOpen
@@ -1993,60 +2047,6 @@ index 3f0ce7630..5cf17848f 100644
 +                wrapMode: Text.WordWrap
 +                text: root.mgaFieldWindText()
 +            }
-+            Flow {
-+                visible: root.mgaOverlayOpen
-+                width: parent.width
-+                spacing: Style.margin / 2
-+                Button {
-+                    text: qsTr("Charts (FAA)")
-+                    height: Style.strutSize * 0.72
-+                    font.pixelSize: Style.baseFontPixelSize
-+                    onClicked: {
-+                        root.mgaChartsNote = qsTr("Looking up the current chart cycle…");
-+                        _launcher.requestFaaCharts(root.mgaField.ident);
-+                    }
-+                }
-+                Button {
-+                    text: qsTr("Download ArcGIS photo scenery")
-+                    height: Style.strutSize * 0.72
-+                    font.pixelSize: Style.baseFontPixelSize
-+                    onClicked: {
-+                        root.mgaPhotoNote = _launcher.startPhotoDownload("ArcGIS", 0.15)
-+                            ? qsTr("Downloading about 30 × 30 km of ArcGIS imagery around %1…").arg(root.mgaField.ident)
-+                            : qsTr("Couldn't start the photo scenery download.");
-+                    }
-+                }
-+                Button {
-+                    text: qsTr("Download USGS photo scenery")
-+                    height: Style.strutSize * 0.72
-+                    font.pixelSize: Style.baseFontPixelSize
-+                    onClicked: {
-+                        root.mgaPhotoNote = _launcher.startPhotoDownload("USGS", 0.15)
-+                            ? qsTr("Downloading about 30 × 30 km of USGS imagery around %1…").arg(root.mgaField.ident)
-+                            : qsTr("Couldn't start the photo scenery download.");
-+                    }
-+                }
-+            }
-+            StyledText {
-+                visible: root.mgaOverlayOpen && root.mgaChartsNote !== ""
-+                width: parent.width
-+                wrapMode: Text.WordWrap
-+                text: root.mgaChartsNote
-+            }
-+            StyledText {
-+                visible: root.mgaOverlayOpen && root.mgaPhotoNote !== ""
-+                width: parent.width
-+                wrapMode: Text.WordWrap
-+                text: root.mgaPhotoNote + qsTr("\nTiles you already have are kept. New tiles appear on the next start. ArcGIS imagery is Esri's, for personal use.")
-+            }
-+            Timer {
-+                interval: 3000
-+                repeat: true
-+                running: root.mgaOverlayOpen && root.mgaPhotoNote !== "" && mgaOverlay.visible
-+                onTriggered: {
-+                    var st = _launcher.photoDownloadStatus();
-+                    if (st !== "") root.mgaPhotoNote = st;
-+                }
 +            }
 +        }
 +    }
