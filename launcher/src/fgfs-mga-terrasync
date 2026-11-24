@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""fgfs-mga-terrasync LAT LON
+
+Downloads the TerraSync scenery (terrain, objects, osm2city buildings, roads, pylons, trees, details)
+for the 1x1 degree tile around a point into ~/.fgfs/TerraSync, the same way FlightGear's own TerraSync
+does, so the field is ready before Fly. Files that are already there with the right hash are kept.
+Started by the FlightGear launcher's Summary page. Log: ~/.local/share/fgfs-mga/terrasync.log
+"""
+import fcntl, hashlib, math, os, sys, tarfile, time, urllib.error, urllib.request
+
+HOME = os.path.expanduser("~")
+ROOT = os.path.join(HOME, ".fgfs", "TerraSync")
+LOG = os.path.join(HOME, ".local", "share", "fgfs-mga", "terrasync.log")
+LOCK = os.path.join(HOME, ".local", "share", "fgfs-mga", "terrasync.lock")
+WS20 = os.environ.get("FGFS_MGA_TS_WS20", "https://terrasync.b-cdn.net/")
+O2C = os.environ.get("FGFS_MGA_TS_O2C", "https://terrasync-osm2city.b-cdn.net/")
+UA = "FlightGear-TerraSync/2024.1 (fgfs-mga)"
+
+
+def log(msg):
+    with open(LOG, "a") as f:
+        f.write(time.strftime("%H:%M:%S ") + msg + "\n")
+
+
+def get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except urllib.error.HTTPError:
+            raise
+        except Exception:
+            if attempt == 3:
+                raise
+            time.sleep(2 + attempt * 3)
+
+
+def sha1(data):
+    return hashlib.sha1(data).hexdigest()
+
+
+def file_sha1(path):
+    try:
+        with open(path, "rb") as f:
+            return sha1(f.read())
+    except OSError:
+        return None
+
+
+def tile_dirs(lat, lon):
+    def part(v, pos, neg, width):
+        return (pos if v >= 0 else neg) + str(abs(v)).zfill(width)
+    lo1, la1 = math.floor(lon), math.floor(lat)
+    lo10, la10 = math.floor(lon / 10) * 10, math.floor(lat / 10) * 10
+    ten = part(lo10, "e", "w", 3) + part(la10, "n", "s", 2)
+    one = part(lo1, "e", "w", 3) + part(la1, "n", "s", 2)
+    return ten, one
+
+
+def parse_index(text):
+    out = []
+    for line in text.decode("utf-8", "replace").splitlines():
+        p = line.split(":")
+        if len(p) >= 3 and p[0] in ("f", "t", "d"):
+            out.append((p[0], p[1], p[2]))
+    return out
+
+
+def sync_dir(server, kind, ten, one):
+    """ws2.0 layout: one folder per 1x1 tile with plain files."""
+    rel = f"{kind}/{ten}/{one}"
+    try:
+        idx = get(server + rel + "/.dirindex")
+    except Exception as e:
+        log(f"{rel}: none on the server ({e.__class__.__name__})")
+        return 0
+    dest = os.path.join(ROOT, kind, ten, one)
+    os.makedirs(dest, exist_ok=True)
+    n = 0
+    for typ, name, h in parse_index(idx):
+        if typ != "f" or "/" in name or name.startswith("."):
+            continue
+        path = os.path.join(dest, name)
+        if file_sha1(path) == h:
+            continue
+        data = get(server + rel + "/" + name)
+        if sha1(data) != h:
+            log(f"{rel}/{name}: hash mismatch, skipped")
+            continue
+        with open(path + ".part", "wb") as f:
+            f.write(data)
+        os.replace(path + ".part", path)
+        n += 1
+    with open(os.path.join(dest, ".dirindex"), "wb") as f:
+        f.write(idx)
+    log(f"{rel}: {n} new file(s)")
+    return n
+
+
+def sync_tarball(server, kind, ten, one):
+    """osm2city layout: one .txz per 1x1 tile inside the 10x10 folder, unpacked next to it."""
+    rel = f"{kind}/{ten}"
+    try:
+        idx = get(server + rel + "/.dirindex")
+    except Exception as e:
+        log(f"{rel}: none on the server ({e.__class__.__name__})")
+        return 0
+    want = [(t, n, h) for (t, n, h) in parse_index(idx) if t == "t" and n == one + ".txz"]
+    if not want:
+        log(f"{kind}/{ten}/{one}: none on the server")
+        return 0
+    _, name, h = want[0]
+    dest = os.path.join(ROOT, kind, ten)
+    os.makedirs(dest, exist_ok=True)
+    path = os.path.join(dest, name)
+    if file_sha1(path) == h and os.path.isdir(os.path.join(dest, one)):
+        log(f"{kind}/{ten}/{one}: already current")
+        return 0
+    data = get(server + rel + "/" + name)
+    if sha1(data) != h:
+        log(f"{kind}/{ten}/{one}: hash mismatch, skipped")
+        return 0
+    with open(path + ".part", "wb") as f:
+        f.write(data)
+    os.replace(path + ".part", path)
+    with tarfile.open(path, "r:xz") as tf:
+        for m in tf.getmembers():   # stay inside the tile folder
+            if m.name.startswith("/") or ".." in m.name.split("/") or not (m.isfile() or m.isdir()):
+                raise RuntimeError("unexpected path in " + name)
+        tf.extractall(dest)
+    log(f"{kind}/{ten}/{one}: unpacked")
+    return 1
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(__doc__)
+        return 2
+    lat, lon = float(sys.argv[1]), float(sys.argv[2])
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    lock = open(LOCK, "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("already downloading; wait for it to finish")
+        return 1
+    ten, one = tile_dirs(lat, lon)
+    log(f"START scenery for tile {ten}/{one} into {ROOT}")
+    total, failed = 0, []
+    jobs = [(sync_dir, WS20, k) for k in ("Terrain", "Objects")] + \
+           [(sync_tarball, O2C, k) for k in ("Buildings", "Roads", "Pylons", "Trees", "Details")]
+    for fn, server, kind in jobs:
+        try:
+            total += fn(server, kind, ten, one)
+        except Exception as e:
+            log(f"{kind}/{ten}/{one}: failed ({e})")
+            failed.append(kind)
+    if failed:
+        log(f"DONE with gaps: {total} new file(s) or tile pack(s) for {one}; {', '.join(failed)} failed, press Download again to retry.")
+        return 1
+    log(f"DONE: {total} new file(s) or tile pack(s) for {one}. Restart FlightGear to see them.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -98,7 +98,7 @@ index a0a46e6f8..cb6261415 100644
  }
  
 diff --git a/src/GUI/LauncherController.cxx b/src/GUI/LauncherController.cxx
-index 3ad5fd298..f7b1fd7a5 100644
+index 3ad5fd298..522a9f992 100644
 --- a/src/GUI/LauncherController.cxx
 +++ b/src/GUI/LauncherController.cxx
 @@ -11,9 +11,30 @@
@@ -487,7 +487,7 @@ index 3ad5fd298..f7b1fd7a5 100644
  bool LauncherController::validateMetarString(QString metar)
  {
      if (metar.isEmpty()) {
-@@ -1060,3 +1415,497 @@ void LauncherController::onReachabilityChanged()
+@@ -1060,3 +1415,534 @@ void LauncherController::onReachabilityChanged()
      emit networkAvailableChanged();
  #endif
  }
@@ -809,6 +809,32 @@ index 3ad5fd298..f7b1fd7a5 100644
 +    return p.startDetached();
 +}
 +
++bool LauncherController::startSceneryDownload()
++{
++    const QVariantMap f = airportFieldInfo();
++    if (!f.value(QStringLiteral("valid")).toBool()) return false;
++    const QString tool = QDir::homePath() + QStringLiteral("/.local/share/fgfs-mga/tools/fgfs-mga-terrasync");
++    if (!QFileInfo(tool).isExecutable()) return false;
++    QProcess p;
++    p.setProgram(tool);
++    p.setArguments({QString::number(f.value(QStringLiteral("latitudeDeg")).toDouble(), 'f', 4),
++                    QString::number(f.value(QStringLiteral("longitudeDeg")).toDouble(), 'f', 4)});
++    p.setProcessEnvironment(mgaToolEnvironment());
++    p.setStandardInputFile(QProcess::nullDevice());
++    p.setStandardOutputFile(QProcess::nullDevice());
++    p.setStandardErrorFile(QProcess::nullDevice());
++    return p.startDetached();
++}
++
++QString LauncherController::sceneryDownloadStatus() const
++{
++    QFile log(QDir::homePath() + QStringLiteral("/.local/share/fgfs-mga/terrasync.log"));
++    if (!log.open(QIODevice::ReadOnly)) return {};
++    if (log.size() > 4096) log.seek(log.size() - 4096);
++    const QStringList lines = QString::fromUtf8(log.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
++    return lines.isEmpty() ? QString() : lines.last().trimmed();
++}
++
 +QString LauncherController::photoDownloadStatus() const
 +{
 +    QFile log(QDir::homePath() + QStringLiteral("/.local/share/fgfs-mga/arcgis.log"));
@@ -878,8 +904,19 @@ index 3ad5fd298..f7b1fd7a5 100644
 +        QFile comm(p.absoluteFilePath() + QStringLiteral("/comm"));
 +        if (!comm.open(QIODevice::ReadOnly)) continue;
 +        const QString name = QString::fromLatin1(comm.readAll()).trimmed().toLower();
-+        if (!(name.startsWith(QStringLiteral("chrom")) || name.startsWith(QStringLiteral("firefox"))
-+              || name == QStringLiteral("brave") || name.startsWith(QStringLiteral("web content")))) continue;
++        // Chromium and Firefox families, including Firefox forks (FireDragon, LibreWolf, Floorp, Waterfox, Zen)
++        // and their content processes ("Isolated Web Co", "Web Content", "WebExtensions")
++        static const QStringList browserPrefixes = {
++            QStringLiteral("chrom"), QStringLiteral("firefox"), QStringLiteral("brave"), QStringLiteral("web content"),
++            QStringLiteral("isolated web"), QStringLiteral("webextensions"), QStringLiteral("privileged cont"),
++            QStringLiteral("rdd process"), QStringLiteral("socket process"), QStringLiteral("utility process"),
++            QStringLiteral("firedragon"), QStringLiteral("librewolf"), QStringLiteral("floorp"),
++            QStringLiteral("waterfox"), QStringLiteral("zen"), QStringLiteral("vivaldi"), QStringLiteral("opera")};
++        bool isBrowser = false;
++        for (const QString& b : browserPrefixes) {
++            if (name.startsWith(b)) { isBrowser = true; break; }
++        }
++        if (!isBrowser) continue;
 +        QFile status(p.absoluteFilePath() + QStringLiteral("/status"));
 +        if (!status.open(QIODevice::ReadOnly)) continue;
 +        const QStringList lines = QString::fromLatin1(status.readAll()).split(QLatin1Char('\n'));
@@ -986,7 +1023,7 @@ index 3ad5fd298..f7b1fd7a5 100644
 +    return QDesktopServices::openUrl(QUrl::fromLocalFile(clean));
 +}
 diff --git a/src/GUI/LauncherController.hxx b/src/GUI/LauncherController.hxx
-index a5ae99e09..31a2b480c 100644
+index a5ae99e09..a4842a976 100644
 --- a/src/GUI/LauncherController.hxx
 +++ b/src/GUI/LauncherController.hxx
 @@ -10,6 +10,7 @@
@@ -1013,7 +1050,7 @@ index a5ae99e09..31a2b480c 100644
  
      Q_PROPERTY(bool canFly READ canFly NOTIFY canFlyChanged)
  
-@@ -91,6 +94,36 @@ public:
+@@ -91,6 +94,38 @@ public:
      void initQML(int& styleTypeId);
  
      Q_INVOKABLE bool validateMetarString(QString metar);
@@ -1042,6 +1079,8 @@ index a5ae99e09..31a2b480c 100644
 +    Q_INVOKABLE bool startPhotoDownload(QString provider, double halfDeg);
 +    Q_INVOKABLE QString photoDownloadStatus() const;
 +    Q_INVOKABLE void requestFaaCharts(QString ident);
++    Q_INVOKABLE bool startSceneryDownload();
++    Q_INVOKABLE QString sceneryDownloadStatus() const;
 +    Q_INVOKABLE QVariantMap boardStatus() const;
 +    Q_INVOKABLE QStringList lanAddresses() const;
 +    Q_INVOKABLE QString aircraftChecklistText() const;
@@ -1050,7 +1089,7 @@ index a5ae99e09..31a2b480c 100644
  
      Q_INVOKABLE void requestInstallUpdate(QUrl aircraftUri);
  
-@@ -218,6 +251,12 @@ public:
+@@ -218,6 +253,12 @@ public:
  
      bool isNetworkAvailable() const;
  signals:
@@ -1063,7 +1102,7 @@ index a5ae99e09..31a2b480c 100644
  
      void selectedAircraftChanged(QUrl selectedAircraft);
      void selectedAircraftStateChanged();
-@@ -316,6 +355,7 @@ private:
+@@ -316,6 +357,7 @@ private:
      QStringList m_settingsSummary, m_environmentSummary;
      RecentAircraftModel* m_aircraftHistory = nullptr;
      RecentLocationsModel* m_locationHistory = nullptr;
@@ -1539,7 +1578,7 @@ index 58d1111b1..51fa54305 100644
  
      Component.onCompleted:
 diff --git a/src/GUI/qml/Location.qml b/src/GUI/qml/Location.qml
-index 3f0ce7630..b801914f6 100644
+index 3f0ce7630..72727b7d2 100644
 --- a/src/GUI/qml/Location.qml
 +++ b/src/GUI/qml/Location.qml
 @@ -2,11 +2,125 @@ import QtQuick 2.4
@@ -1918,6 +1957,7 @@ index 3f0ce7630..b801914f6 100644
 +                    var st = _launcher.photoDownloadStatus();
 +                    if (st !== "") root.mgaPhotoNote = st;
 +                }
++            }
 +            Item {
 +                id: mgaMapView
 +                visible: root.mgaOverlayOpen
@@ -2046,7 +2086,6 @@ index 3f0ce7630..b801914f6 100644
 +                width: parent.width
 +                wrapMode: Text.WordWrap
 +                text: root.mgaFieldWindText()
-+            }
 +            }
 +        }
 +    }
@@ -3244,7 +3283,7 @@ index 730a8f1f9..6563f32ca 100644
      readonly property int menuItemHeight: baseFontPixelSize + (margin * 2)
  }
 diff --git a/src/GUI/qml/Summary.qml b/src/GUI/qml/Summary.qml
-index df12381dc..5ea859d43 100644
+index df12381dc..a9b6d549c 100644
 --- a/src/GUI/qml/Summary.qml
 +++ b/src/GUI/qml/Summary.qml
 @@ -5,6 +5,7 @@ import QtQuick 2.4
@@ -3255,7 +3294,7 @@ index df12381dc..5ea859d43 100644
  
  Item {
      id: root
-@@ -401,6 +402,441 @@ Item {
+@@ -401,6 +402,470 @@ Item {
          }
      } // of summary box
  
@@ -3274,6 +3313,7 @@ index df12381dc..5ea859d43 100644
 +    property bool mgaChecklistOpen: false
 +    property string mgaChecklistText: ""
 +    property string mgaSetupNote: ""
++    property string mgaSceneryNote: ""
 +
 +    function mgaJson(v) { try { return v ? JSON.parse(v) : null; } catch (e) { return null; } }
 +
@@ -3340,6 +3380,7 @@ index df12381dc..5ea859d43 100644
 +        var b = mgaBoard;
 +        if (b.memAvailMB === undefined) return "";
 +        var s = qsTr("%1 GB memory free, CPU %2 °C").arg((b.memAvailMB / 1024).toFixed(1)).arg(b.cpuTempC);
++        if (b.browserMB > 300) s += qsTr(", browser using %1 GB").arg((b.browserMB / 1024).toFixed(1));
 +        var warn = [];
 +        if (b.memAvailMB < 2500) warn.push(qsTr("low on memory, fewer browser tabs would help"));
 +        if (b.cpuTempC > 75) warn.push(qsTr("running hot, the heat cap may slow frames"));
@@ -3540,6 +3581,33 @@ index df12381dc..5ea859d43 100644
 +                    wrapMode: Text.WordWrap
 +                    visible: root.mgaSceneryText() !== ""
 +                    text: qsTr("<b>Scenery here:</b> ") + root.mgaSceneryText()
++                }
++                Button {
++                    visible: root.mgaField.valid
++                    text: qsTr("Download scenery for %1").arg(root.mgaField.ident)
++                    onClicked: {
++                        root.mgaSceneryNote = _launcher.startSceneryDownload()
++                            ? qsTr("Downloading terrain, objects and buildings for the tile around %1…").arg(root.mgaField.ident)
++                            : qsTr("Couldn't start the scenery download.");
++                    }
++                }
++                StyledText {
++                    width: parent.width
++                    wrapMode: Text.WordWrap
++                    visible: root.mgaSceneryNote !== ""
++                    text: root.mgaSceneryNote
++                }
++                Timer {
++                    interval: 3000
++                    repeat: true
++                    running: root.mgaSceneryNote !== "" && root.mgaSceneryNote.indexOf("DONE") < 0
++                             && root.mgaSceneryNote.indexOf("FAILED") < 0
++                    onTriggered: {
++                        var st = _launcher.sceneryDownloadStatus();
++                        if (st === "") return;
++                        root.mgaSceneryNote = st;
++                        if (st.indexOf("DONE") >= 0) root.mgaScenery = _launcher.sceneryStatus();
++                    }
 +                }
 +                StyledText {
 +                    width: parent.width
