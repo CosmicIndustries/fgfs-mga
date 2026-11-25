@@ -11,9 +11,9 @@ exec > >(tee "$LOG") 2>&1
 KERNEL_RELEASE="$(uname -r)"
 KERNEL_BUILD="/lib/modules/$KERNEL_RELEASE/build"
 
-command -v make >/dev/null 2>&1 || { echo "ERROR: make is required"; exit 1; }
-command -v modinfo >/dev/null 2>&1 || { echo "ERROR: modinfo is required (install kmod)"; exit 1; }
-command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required"; exit 1; }
+command -v make >/dev/null 2>&1 || { echo "ERROR: make is required" >&2; exit 1; }
+command -v modinfo >/dev/null 2>&1 || { echo "ERROR: modinfo is required (install kmod)" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required" >&2; exit 1; }
 [[ -d "$KERNEL_BUILD" ]] || {
   echo "ERROR: matching kernel headers are missing: $KERNEL_BUILD" >&2
   exit 1
@@ -36,7 +36,7 @@ echo "=== Building evo-cyborg-v2 for $KERNEL_RELEASE"
 )
 
 module="$SCRIPT_DIR/evo-cyborg-v2/hid_universal_pidff.ko"
-[[ -s "$module" ]] || { echo "ERROR: expected module was not produced: $module"; exit 1; }
+[[ -s "$module" ]] || { echo "ERROR: expected module was not produced: $module" >&2; exit 1; }
 vermagic="$(modinfo -F vermagic "$module")"
 [[ "${vermagic%% *}" == "$KERNEL_RELEASE" ]] || {
   echo "ERROR: module vermagic '$vermagic' does not match running kernel '$KERNEL_RELEASE'" >&2
