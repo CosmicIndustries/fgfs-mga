@@ -52,8 +52,8 @@ OFF_LOG="$ROOT/off.log"
 MOCK_LOG="$OFF_LOG" HOME="$OFF_HOME" PATH="$OFF_BIN:$PATH" JOBS=1 \
   bash "$BUILD_SCRIPT" sg-openal fg-openal
 grep -q -- '-DENABLE_TESTS=OFF' "$OFF_LOG" || fail 'default SimGear test option was not OFF'
-! grep -q '^ctest ' "$ON_LOG" || fail 'default build unexpectedly ran CTest'
-! grep -q 'test_suite' "$MOCK_LOG" || fail 'default build unexpectedly built the FlightGear test suite'
+! grep -q '^ctest ' "$OFF_LOG" || fail 'default build unexpectedly ran CTest'
+! grep -q 'test_suite' "$OFF_LOG" || fail 'default build unexpectedly built the FlightGear test suite'
 pass 'default build keeps both upstream test suites disabled'
 
 # Opt-in path: SimGear tests are enabled and CTest is run for both projects.
@@ -67,10 +67,10 @@ ON_LOG="$ROOT/on.log"
 MOCK_LOG="$ON_LOG" HOME="$ON_HOME" PATH="$ON_BIN:$PATH" JOBS=1 \
   MGA_ENABLE_TESTS=1 FG_ROOT="$ON_HOME/data" \
   bash "$BUILD_SCRIPT" sg-openal fg-openal
-grep -q -- '-DENABLE_TESTS=ON' "$MOCK_LOG" || fail 'opt-in did not enable SimGear test apps'
-grep -q '^ctest --test-dir .*simgear-2024.1.7/build ' "$MOCK_LOG" || fail 'SimGear CTest was not run'
-grep -q 'ninja .* test_suite' "$MOCK_LOG" || fail 'FlightGear test_suite target was not built'
-grep -q '^ctest --test-dir .*flightgear-2024.1.7/build .*FG_ROOT=' "$MOCK_LOG" || fail 'FlightGear CTest was not run'
+grep -q -- '-DENABLE_TESTS=ON' "$ON_LOG" || fail 'opt-in did not enable SimGear test apps'
+grep -q '^ctest --test-dir .*simgear-2024.1.7/build ' "$ON_LOG" || fail 'SimGear CTest was not run'
+grep -q 'ninja .* test_suite' "$ON_LOG" || fail 'FlightGear test_suite target was not built'
+grep -q '^ctest --test-dir .*flightgear-2024.1.7/build .*FG_ROOT=' "$ON_LOG" || fail 'FlightGear CTest was not run'
 pass 'opt-in enables SimGear tests and explicitly builds/runs FlightGear tests with FG_ROOT'
 
 # Test mode must refuse to run FlightGear tests without a usable FG_ROOT.
@@ -78,7 +78,7 @@ MISSING_HOME="$ROOT/missing-home"
 MISSING_BIN="$ROOT/missing-bin"
 make_home "$MISSING_HOME"
 make_fakes "$MISSING_BIN"
-if MISSING_LOG="$ROOT/missing.log"
+MISSING_LOG="$ROOT/missing.log"
 if MOCK_LOG="$MISSING_LOG" HOME="$MISSING_HOME" PATH="$MISSING_BIN:$PATH" JOBS=1 \
   MGA_ENABLE_TESTS=1 FG_ROOT="$MISSING_HOME/no-data" \
   bash "$BUILD_SCRIPT" fg-openal; then
