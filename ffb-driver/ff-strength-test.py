@@ -33,7 +33,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--allow-high-force",
         action="store_true",
-        help=f"allow gain above {HIGH_FORCE_THRESHOLD}%% after interactive confirmation",
+        help=f"allow gain above {HIGH_FORCE_THRESHOLD}% after interactive confirmation",
     )
     args = parser.parse_args(argv)
 
@@ -49,7 +49,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def scaled_force(maximum: int, gain_percent: int) -> int:
     """Scale an effect parameter as well as setting the device master gain."""
     if maximum < 0 or not 0 <= gain_percent <= 100:
-        raise ValueError("maximum and gain_percent must be nonnegative and within 0..100")
+        raise ValueError("maximum must be nonnegative and gain_percent must be within 0..100")
     return maximum * gain_percent // 100
 
 
