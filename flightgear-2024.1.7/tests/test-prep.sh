@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-PREP_SCRIPT=${PREP_SCRIPT:-"$SCRIPT_DIR/prep.sh"}
+PREP_SCRIPT=${PREP_SCRIPT:-"$SCRIPT_DIR/../prep.sh"}
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
@@ -46,7 +46,6 @@ run_prep() {
   bash "$PREP_SCRIPT"
 }
 
-# Happy path: staged + unstaged + binary + unusual untracked paths and .bak files.
 GOOD="$TEST_ROOT/good"
 init_pair "$GOOD"
 for project in simgear flightgear; do
@@ -76,13 +75,11 @@ for project in simgear flightgear; do
 done
 pass 'staged, unstaged, binary, whitespace/newline, .bak, and leading-dash changes restored; GitHub remotes preserved'
 
-# Re-run: existing worktrees must be recognized and left untouched, not patched twice.
 run_prep "$GOOD" > "$GOOD/rerun.log" 2>&1 || { cat "$GOOD/rerun.log"; fail 'idempotent rerun failed'; }
 grep -q 'Existing simgear worktree found' "$GOOD/rerun.log" || fail 'simgear worktree rerun was not detected'
 grep -q 'Existing flightgear worktree found' "$GOOD/rerun.log" || fail 'flightgear worktree rerun was not detected'
 pass 'rerun recognized existing target worktrees and skipped patch reapplication'
 
-# Collision: an untracked source path must never overwrite the same path in the tag worktree.
 COLLISION="$TEST_ROOT/collision"
 init_pair "$COLLISION"
 for project in simgear flightgear; do
@@ -101,7 +98,6 @@ fi
 grep -q 'destination already exists' "$COLLISION/run.log" || fail 'collision diagnostic missing'
 pass 'untracked-file collision failed closed without overwriting target data'
 
-# Patch conflict: a dirty patch based on a newer source commit must stop the run.
 CONFLICT="$TEST_ROOT/conflict"
 init_pair "$CONFLICT"
 for project in simgear flightgear; do
