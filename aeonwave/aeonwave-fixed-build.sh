@@ -1,10 +1,15 @@
 #!/bin/bash
 # Builds AeonWave with the NEON fmadd fix and the WAV tag-parser fix into ~/builds/aeonwave-fixed (a copy of ~/builds/aeonwave) and puts
 # the library in ~/builds/aeonwave-fixed-prefix/lib/aarch64-linux-gnu. The original tree and prefix stay as they are.
-exec > ~/builds/aeonwave-fixed-build.log 2>&1
-set -e
-cd ~/builds
-rm -rf aeonwave-fixed                            # only ever this script's own copy
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec > "$HOME/builds/aeonwave-fixed-build.log" 2>&1
+set -Eeuo pipefail
+cd "$HOME/builds"
+[[ -d aeonwave && ! -L aeonwave ]] || {
+  echo "ERROR: expected source directory $HOME/builds/aeonwave is missing or is a symlink" >&2
+  exit 1
+}
+bash "$SCRIPT_DIR/preserve-build-copy.sh" "$HOME/builds/aeonwave-fixed"
 mkdir aeonwave-fixed
 tar -C aeonwave --exclude=./build -cf - . | tar -C aeonwave-fixed -xf -
 python3 aeonwave-fmadd-fix.py aeonwave-fixed
