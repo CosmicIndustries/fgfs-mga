@@ -13,7 +13,7 @@ exec > >(tee "$LOG") 2>&1
 KERNEL_RELEASE="$(uname -r)"
 KERNEL_BUILD="/lib/modules/$KERNEL_RELEASE/build"
 
-for command in git make modinfo python3 tee; do
+for command in git make modinfo python3 tar tee; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command not found: $command"
     exit 1
@@ -29,8 +29,8 @@ bash "$SCRIPT_DIR/bootstrap-driver-sources.sh"
 
 for variant in evo-universal evo-cyborg; do
   rm -rf -- "$variant"
-  cp -a universal-pidff "$variant"
-  rm -f -- "$variant"/*.o "$variant"/*.ko "$variant"/*.mod* "$variant"/.*.cmd 2>/dev/null || true
+  mkdir -p "$variant"
+  git -C "$SCRIPT_DIR/universal-pidff" archive HEAD | tar -x -C "$variant"
 done
 
 python3 "$SCRIPT_DIR/patch-evo.py"
