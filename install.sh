@@ -59,47 +59,77 @@ place() {
   local src="$1" dest="$2" mode="${3:-644}"
   if [[ -f "$dest" ]] && cmp -s -- "$src" "$dest"; then return 0; fi
   if (( DRY )); then say "  [dry-run] would write $dest"; return 0; fi
-  mkdir -p "$(dirname "$dest")" "$BK"
+  mkdir -p "$(dirname "$dest")" "$BK" || {
+    say "ERROR: could not create the destination or backup directory for $dest" >&2
+    return 1
+  }
   if [[ -f "$dest" ]]; then
-    local saved="$BK/files/${dest#"$HOME"/}"; mkdir -p "$(dirname "$saved")"; cp -p -- "$dest" "$saved"
-    printf 'replaced\t%s\t%s\n' "$dest" "$saved" >> "$BK/manifest"
+    local saved="$BK/files/${dest#"$HOME"/}"
+    mkdir -p "$(dirname "$saved")" || {
+      say "ERROR: could not create backup directory for $dest" >&2
+      return 1
+    }
+    cp -p -- "$dest" "$saved" || {
+      say "ERROR: could not back up existing file $dest" >&2
+      return 1
+    }
+    printf 'replaced\t%s\t%s\n' "$dest" "$saved" >> "$BK/manifest" || {
+      say "ERROR: could not record backup for $dest" >&2
+      return 1
+    }
     say "  updated $dest (old copy in $BK)"
   else
-    printf 'created\t%s\t-\n' "$dest" >> "$BK/manifest"
+    printf 'created\t%s\t-\n' "$dest" >> "$BK/manifest" || {
+      say "ERROR: could not record new file $dest" >&2
+      return 1
+    }
     say "  added $dest"
   fi
-  install -m "$mode" -- "$src" "$dest"
+  install -m "$mode" -- "$src" "$dest" || {
+    say "ERROR: could not install $src to $dest" >&2
+    return 1
+  }
+}
+
+place_or_die() {
+  place "$@" || exit 1
 }
 
 # ---------------- 1. the launcher (its own installer: backups, shims, menu entry) ----------------
 say "== fgfs-mga launcher"
-bash "$HERE/launcher/install-fgfs-mga.sh" "${PASS[@]}" | sed 's/^/  /'
+if ( set -o pipefail; bash "$HERE/launcher/install-fgfs-mga.sh" "${PASS[@]}" | sed 's/^/  /' ); then
+  :
+else
+  launcher_status=$?
+  say "ERROR: launcher installation failed (exit $launcher_status); remaining files were not installed." >&2
+  exit "$launcher_status"
+fi
 
 # ---------------- 2. tools, launcher add-on, profiles ----------------
 say "== tools (in $TOOLS)"
 for f in "$HERE"/launcher/tools/*; do
   case "$f" in *.c) continue ;; esac
-  place "$f" "$TOOLS/${f##*/}" 755
+  place_or_die "$f" "$TOOLS/${f##*/}" 755
 done
-for f in fgfs-mga-arcgis fgfs-mga-terrasync; do place "$HERE/launcher/src/$f" "$TOOLS/$f" 755; done
-place "$HERE/launcher/tools/aeonwave-output-test.c" "$HOME/.local/share/aeonwave/aeonwave-output-test.c"
+for f in fgfs-mga-arcgis fgfs-mga-terrasync; do place_or_die "$HERE/launcher/src/$f" "$TOOLS/$f" 755; done
+place_or_die "$HERE/launcher/tools/aeonwave-output-test.c" "$HOME/.local/share/aeonwave/aeonwave-output-test.c"
 
 say "== launcher add-on (start state, crash reset, auto mixture)"
 for f in "$HERE"/launcher/addons/mga-launcher-extras/*; do
-  place "$f" "$HOME/.fgfs/fgfs-mga-addons/mga-launcher-extras/${f##*/}"
+  place_or_die "$f" "$HOME/.fgfs/fgfs-mga-addons/mga-launcher-extras/${f##*/}"
 done
 
 say "== in-flight checklist add-on (Ctrl-K in flight)"
 while IFS= read -r f; do
   sub="${f#"$HERE"/launcher/addons/mga-checklist/}"
-  place "$f" "$HOME/.fgfs/FlightGear-2024.1-Addons-MGA/mga-checklist/$sub"
+  place_or_die "$f" "$HOME/.fgfs/FlightGear-2024.1-Addons-MGA/mga-checklist/$sub"
 done < <(find "$HERE/launcher/addons/mga-checklist" -type f ! -path '*/tools/*' ! -name '*.pyc' | sort)
 
 say "== ROCK 5B performance profiles (yours are kept if you have them)"
 for f in "$HERE"/launcher/config/flightgear-rock5b/*; do
   d="$HOME/.config/flightgear-rock5b/${f##*/}"
   [[ -f "$d" ]] && continue
-  place "$f" "$d"
+  place_or_die "$f" "$d"
 done
 
 # ---------------- 3. FlightGear builds from the release (optional) ----------------
