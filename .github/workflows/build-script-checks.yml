@@ -1,0 +1,39 @@
+name: FlightGear build script checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flightgear-2024.1.7/build.sh'
+      - 'flightgear-2024.1.7/tests/test-build-test-options.sh'
+      - 'flightgear-2024.1.7/TESTING.md'
+      - '.github/workflows/build-script-checks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'flightgear-2024.1.7/build.sh'
+      - 'flightgear-2024.1.7/tests/test-build-test-options.sh'
+      - 'flightgear-2024.1.7/TESTING.md'
+      - '.github/workflows/build-script-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-script:
+    name: Build option regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check shell syntax
+        run: |
+          bash -n flightgear-2024.1.7/build.sh
+          bash -n flightgear-2024.1.7/tests/test-build-test-options.sh
+
+      - name: Exercise default and opt-in modes with mocked build tools
+        run: bash flightgear-2024.1.7/tests/test-build-test-options.sh
