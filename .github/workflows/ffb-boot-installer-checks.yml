@@ -1,0 +1,34 @@
+name: FFB boot installer safety checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ffb-driver/install-evo-ffb-boot.sh'
+      - 'ffb-driver/test-install-evo-ffb-boot.sh'
+      - '.github/workflows/ffb-boot-installer-checks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ffb-driver/install-evo-ffb-boot.sh'
+      - 'ffb-driver/test-install-evo-ffb-boot.sh'
+      - '.github/workflows/ffb-boot-installer-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: FFB boot installer rollback tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n ffb-driver/install-evo-ffb-boot.sh
+          bash -n ffb-driver/test-install-evo-ffb-boot.sh
+      - name: Test backup, restore, safe removal and failure rollback
+        run: sudo bash ffb-driver/test-install-evo-ffb-boot.sh

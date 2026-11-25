@@ -96,6 +96,13 @@ Undo the boot installation and unload it:
 sudo bash ffb-driver/install-evo-ffb-boot.sh off
 ```
 
+The installer stores the prior module and boot configuration (including
+symlinks) under `/var/lib/fgfs-mga-ffb/<kernel-release>/`. The `off` command
+restores those prior files, or removes a path only when it did not exist before
+installation. It refuses to remove files without its state record and refuses
+to overwrite files changed after installation. After a successful `off`, the
+backup state is retained under a timestamped `restored-*` directory.
+
 After a kernel update, rebuild against the new kernel's matching headers and
 reinstall. The installer rejects a module whose `vermagic` does not match
 the running kernel.
