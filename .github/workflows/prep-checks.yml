@@ -1,0 +1,37 @@
+name: FlightGear prep checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flightgear-2024.1.7/prep.sh'
+      - 'flightgear-2024.1.7/tests/**'
+      - '.github/workflows/prep-checks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'flightgear-2024.1.7/prep.sh'
+      - 'flightgear-2024.1.7/tests/**'
+      - '.github/workflows/prep-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prep:
+    name: Prep script regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check shell syntax
+        run: |
+          bash -n flightgear-2024.1.7/prep.sh
+          bash -n flightgear-2024.1.7/tests/test-prep.sh
+
+      - name: Test backup, restoration, reruns, conflicts and collisions
+        run: bash flightgear-2024.1.7/tests/test-prep.sh
