@@ -1,0 +1,33 @@
+name: FFB source checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-bootstrap:
+    name: Pinned FFB sources and patch generation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify pinned source bootstrap and local patch pipeline
+        run: bash ffb-driver/test-source-bootstrap.sh
+
+      - name: Check FFB shell scripts
+        run: |
+          bash -n ffb-driver/bootstrap-driver-sources.sh
+          bash -n ffb-driver/build-evo-ffb.sh
+          bash -n ffb-driver/build-evo-cyborg-v2.sh
+          bash -n ffb-driver/install-evo-ffb-boot.sh
+          bash -n ffb-driver/try-evo-ffb.sh
+          bash -n ffb-driver/test-source-bootstrap.sh
