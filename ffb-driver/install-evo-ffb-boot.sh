@@ -130,6 +130,12 @@ fi
 }
 
 mkdir -p -- "$MODULE_ROOT/$KERNEL_RELEASE/extra" "$CONFIG_ROOT" "$STATE_ROOT"
+for path in "$DEST" "$CONF"; do
+  if [[ -d "$path" && ! -L "$path" ]]; then
+    echo "ERROR: destination is a directory; refusing to replace it: $path" >&2
+    exit 1
+  fi
+done
 mkdir -- "$STATE_DIR"
 
 backup_complete=0
@@ -161,10 +167,6 @@ trap cleanup_temps EXIT
 for pair in "module|$DEST" "conf|$CONF"; do
   name=${pair%%|*}
   path=${pair#*|}
-  if [[ -d "$path" && ! -L "$path" ]]; then
-    echo "ERROR: destination is a directory; refusing to replace it: $path" >&2
-    exit 1
-  fi
   if [[ -e "$path" || -L "$path" ]]; then
     cp -a -- "$path" "$STATE_DIR/prior-$name"
     : > "$STATE_DIR/${name}-was-present"
