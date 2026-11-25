@@ -168,6 +168,10 @@ for pair in "module|$DEST" "conf|$CONF"; do
   name=${pair%%|*}
   path=${pair#*|}
   if [[ -e "$path" || -L "$path" ]]; then
+    if [[ ! -f "$path" && ! -L "$path" ]]; then
+      echo "ERROR: destination is not a regular file or symlink; refusing to replace it: $path" >&2
+      exit 1
+    fi
     cp -a -- "$path" "$STATE_DIR/prior-$name"
     : > "$STATE_DIR/${name}-was-present"
   fi
