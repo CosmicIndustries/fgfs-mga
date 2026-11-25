@@ -33,6 +33,8 @@ A="$HOME/.fgfs/Aircraft"
 mkdir -p "$A/PA28" "$A/R44" "$A/R22" "$A/SenecaII" "$A/Cessna337"
 touch "$A/PA28/PA28-161-160-set.xml" "$A/PA28/PA28-161-180-set.xml" "$A/R44/raven-set.xml" \
       "$A/R22/R22-set.xml" "$A/SenecaII/SenecaII-set.xml" "$A/Cessna337/Cessna337-set.xml"
+# a plane installed from the launcher's Aircraft page (package catalog), with no link in $A
+CAT="$A/org.flightgear.fgaddon.stable_2024"; mkdir -p "$CAT/Aircraft/J3Cub"; touch "$CAT/catalog.xml" "$CAT/Aircraft/J3Cub/PA-18-set.xml"
 B="$HOME/.local/bin"; AP="$HOME/.local/share/applications"; DT="$HOME/Desktop"; DL="$HOME/Downloads"
 mkdir -p "$B" "$AP" "$DT" "$DL"
 cat > "$B/fgfs-mga-training" <<'EOF'
@@ -158,6 +160,7 @@ out="$(fg-rock5b visual 2>&1)"; has "$out" "TOOL fg-rock5b visual" "fg-rock5b st
 out="$(fgfs-mga update build 2>&1)"; has "$out" "TOOL fgfs-mga-update build" "fgfs-mga update"
 out="$(fgfs-mga-controller-setup 2>&1)"; has "$out" "TOOL fgfs-mga-controller-setup" "controller shim"
 out="$(fgfs-mga warrior quality --no-addons 2>&1)"; has "$out" "ARG --aircraft=PA28-161-160" "real run execs fgfs"; hasnt "$out" "--addon=" "--no-addons"
+out="$(fgfs-mga pa18 --no-addons 2>&1)"; has "$out" "ARG --aircraft-dir=$CAT/Aircraft/J3Cub" "pa18 found in the package catalog folder"
 out="$(fgfs-mga list 2>&1)"; has "$out" "fgfs-mga update" "list shows tools"; has "$out" "fgfs-mga controls" "controls tool listed"
 python3 -m py_compile "$HOME/.local/share/fgfs-mga/tools/fgfs-mga-controls" && ok "controls tool installed" || bad "controls tool"
 grep -q 'Exec=.*fgfs-mga --launcher' "$AP/fgfs-mga.desktop" && ok "menu entry opens the launcher window" || bad "menu entry Exec";

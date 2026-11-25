@@ -167,6 +167,12 @@ aircraft_roots() {
   local d
   for d in $AIRCRAFT_DIRS; do [[ -d "$d" ]] && printf '%s\n' "$d"; done
   [[ -d "$FG_ROOT_DIR/Aircraft" ]] && printf '%s\n' "$FG_ROOT_DIR/Aircraft"
+  # Planes installed from the launcher's Aircraft page (package catalogs), last so
+  # a hand-installed copy wins. No link in ~/.fgfs/Aircraft is needed for these,
+  # and such a link would list the plane twice in the launcher window.
+  for d in $AIRCRAFT_DIRS; do
+    for c in "$d"/*/Aircraft; do [[ -d "$c" && -f "${c%/Aircraft}/catalog.xml" ]] && printf '%s\n' "$c"; done
+  done
 }
 
 # Sets AC_DIR and AC_ID for a short name or a raw aircraft id. Returns 1 if not found.

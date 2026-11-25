@@ -1116,6 +1116,44 @@ index a5ae99e09..566a14474 100644
  	QSize m_minWindowSize;
      QTimer* m_subsystemIdleTimer = nullptr;
  
+diff --git a/src/GUI/LocalAircraftCache.cxx b/src/GUI/LocalAircraftCache.cxx
+index f7c8c33fe..b5a7012ee 100644
+--- a/src/GUI/LocalAircraftCache.cxx
++++ b/src/GUI/LocalAircraftCache.cxx
+@@ -23,6 +23,8 @@
+ #include <cassert>
+ 
+ #include <QDir>
++#include <QFileInfo>
++#include <QSet>
+ #include <QThread>
+ #include <QMutex>
+ #include <QMutexLocker>
+@@ -654,6 +656,24 @@ void LocalAircraftCache::scanDirs()
+     SGPath rootAircraft = globals->get_fg_root() / "Aircraft";
+     dirs << QString::fromStdString(rootAircraft.utf8Str());
+ 
++    // MGA: the same folder can come from --fg-aircraft, the launcher's saved
++    // aircraft paths and globals' aircraft paths; scan each folder once,
++    // otherwise every aircraft in it is listed once per copy.
++    {
++        QStringList unique;
++        QSet<QString> seen;
++        for (const auto& d : dirs) {
++            const QFileInfo fi(d);
++            const QString key = fi.exists() ? fi.canonicalFilePath() : QDir::cleanPath(d);
++            if (seen.contains(key)) {
++                continue;
++            }
++            seen.insert(key);
++            unique << d;
++        }
++        dirs = unique;
++    }
++
+     d->m_scanThread.reset(new AircraftScanThread(dirs));
+     connect(d->m_scanThread.get(), &AircraftScanThread::finished, this,
+             &LocalAircraftCache::onScanFinished);
 diff --git a/src/GUI/qml/Environment.qml b/src/GUI/qml/Environment.qml
 index 13f213006..b546704e8 100644
 --- a/src/GUI/qml/Environment.qml
