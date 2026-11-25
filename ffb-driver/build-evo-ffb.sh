@@ -1,20 +1,59 @@
-#!/bin/bash
-# Builds two candidate force-feedback modules for the Saitek Cyborg Evo Force (06a3:ffb5) against the
-# running kernel's headers. This kernel has CONFIG_HID_PID off and usbhid built in, so the stock
-# hid-pidff can't be used; these are standalone HID drivers that take the stick over from hid-generic.
-#   evo-universal: universal-pidff (current upstream pidff, device-managed effect memory) + the Evo's id
-#   evo-cyborg:    the same driver shell around cyborg-hid-pidff's pidff (driver-managed memory, written
-#                  and tested for this exact stick)
-# Builds only. Installing/loading needs sudo; see INSTALL-evo-ffb.txt.
-set -u
-cd "$(dirname "$0")"
-exec > build-evo-ffb.log 2>&1
-for v in evo-universal evo-cyborg; do
-  rm -rf "$v"; cp -r universal-pidff "$v"; rm -f "$v"/*.o "$v"/*.ko "$v"/*.mod* "$v"/.*.cmd 2>/dev/null
+#!/usr/bin/env bash
+# Build two Saitek Cyborg Evo Force (06a3:ffb5) module variants for the running kernel.
+# universal-pidff supplies the device-managed implementation; the Cyborg variant uses
+# the older device-specific driver-managed implementation behind the same HID wrapper.
+# Source checkouts are fetched at immutable commits by bootstrap-driver-sources.sh.
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+LOG="$SCRIPT_DIR/build-evo-ffb.log"
+exec > >(tee "$LOG") 2>&1
+
+KERNEL_RELEASE="$(uname -r)"
+KERNEL_BUILD="/lib/modules/$KERNEL_RELEASE/build"
+
+for command in git make modinfo python3 tee; do
+  command -v "$command" >/dev/null 2>&1 || {
+    echo "ERROR: required command not found: $command"
+    exit 1
+  }
 done
-python3 patch-evo.py || exit 1
-for v in evo-universal evo-cyborg; do
-  echo "=== $v"
-  ( cd "$v" && make -C /lib/modules/$(uname -r)/build M="$PWD" -j2 modules ) && ls -la "$v"/*.ko && modinfo "$v"/hid-universal-pidff.ko 2>/dev/null | grep -E "alias.*06A3|vermagic"
+[[ -d "$KERNEL_BUILD" ]] || {
+  echo "ERROR: matching kernel headers are missing: $KERNEL_BUILD"
+  echo "Install the headers for the running kernel ($KERNEL_RELEASE), then rerun."
+  exit 1
+}
+
+bash "$SCRIPT_DIR/bootstrap-driver-sources.sh"
+
+for variant in evo-universal evo-cyborg; do
+  rm -rf -- "$variant"
+  cp -a universal-pidff "$variant"
+  rm -f -- "$variant"/*.o "$variant"/*.ko "$variant"/*.mod* "$variant"/.*.cmd 2>/dev/null || true
 done
-echo DONE
+
+python3 "$SCRIPT_DIR/patch-evo.py"
+
+for variant in evo-universal evo-cyborg; do
+  echo "=== Building $variant for $KERNEL_RELEASE"
+  (
+    cd "$variant"
+    make -C "$KERNEL_BUILD" M="$PWD" -j2 modules
+  )
+  module="$SCRIPT_DIR/$variant/hid_universal_pidff.ko"
+  [[ -s "$module" ]] || {
+    echo "ERROR: expected module was not produced: $module"
+    exit 1
+  }
+  vermagic="$(modinfo -F vermagic "$module")"
+  [[ "${vermagic%% *}" == "$KERNEL_RELEASE" ]] || {
+    echo "ERROR: module vermagic '$vermagic' does not match running kernel '$KERNEL_RELEASE'"
+    exit 1
+  }
+  modinfo "$module" | grep -E '^(alias|vermagic):' || true
+  ls -lh "$module"
+done
+
+echo "DONE: both driver variants built for $KERNEL_RELEASE"
+echo "Build log: $LOG"
