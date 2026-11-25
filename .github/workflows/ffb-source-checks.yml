@@ -31,3 +31,6 @@ jobs:
           bash -n ffb-driver/install-evo-ffb-boot.sh
           bash -n ffb-driver/try-evo-ffb.sh
           bash -n ffb-driver/test-source-bootstrap.sh
+
+      - name: Test low-force defaults and high-force confirmation
+        run: python3 -m unittest discover -s ffb-driver -p 'test_ff_strength_test.py' -v
