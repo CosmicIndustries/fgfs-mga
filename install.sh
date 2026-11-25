@@ -38,10 +38,41 @@ warn() { printf 'NOTE: %s\n' "$*"; }
 
 # ---------------- undo ----------------
 if (( UNDO )); then
-  last="$(find "$SHARE" -maxdepth 2 -path '*/setup-backup-*/manifest' 2>/dev/null | sort | tail -n 1)"; last="${last%/manifest}"
+  last="$(find "$SHARE" -maxdepth 2 -path '*/setup-backup-*/manifest' 2>/dev/null | sort | tail -n 1)"
+  last="${last%/manifest}"
   [[ -n "$last" && -f "$last/manifest" ]] || { say "Nothing to undo (no setup-backup-* in $SHARE)."; exit 1; }
   say "Undoing $last"
-  while IFS=
+  while IFS=$'\t' read -r kind dest saved; do
+    case "$kind" in
+      replaced)
+        if (( DRY )); then
+          say "  [dry-run] would restore $dest"
+        else
+          [[ -e "$saved" || -L "$saved" ]] || { say "ERROR: backup is missing: $saved" >&2; exit 1; }
+          rm -f -- "$dest" || { say "ERROR: could not remove installed path $dest" >&2; exit 1; }
+          mkdir -p "$(dirname "$dest")" || { say "ERROR: could not recreate destination directory for $dest" >&2; exit 1; }
+          cp -a -- "$saved" "$dest" || { say "ERROR: could not restore $dest from $saved" >&2; exit 1; }
+          say "  restored $dest"
+        fi
+        ;;
+      created)
+        if (( DRY )); then
+          say "  [dry-run] would remove $dest (retaining it under $last/created/)"
+        elif [[ -e "$dest" || -L "$dest" ]]; then
+          case "$dest" in
+            "$HOME"/*) relative="${dest#"$HOME"/}" ;;
+            *) relative="external/${dest#/}" ;;
+          esac
+          retained="$last/created/$relative"
+          mkdir -p "$(dirname "$retained")" || { say "ERROR: could not create undo retention directory for $dest" >&2; exit 1; }
+          mv -- "$dest" "$retained" || { say "ERROR: could not retain created path $dest" >&2; exit 1; }
+          say "  removed $dest (retained at $retained)"
+        else
+          say "  already absent: $dest"
+        fi
+        ;;
+    esac
+  done < <(tac "$last/manifest")
   (( DRY )) || mv -- "$last" "${last/setup-backup-/setup-undone-}"
   say "Done. The launcher itself has its own undo:  bash $HERE/launcher/install-fgfs-mga.sh --undo"
   exit 0
