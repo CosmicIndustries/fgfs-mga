@@ -1,5 +1,4 @@
 src/GUI/assets/mga-region-map.svg
-src/GUI/LocalAircraftCache.cxx.before-dedupe-20261125
 src/GUI/qml/Controls.qml
 src/GUI/qml/MgaPreflight.js
 src/GUI/qml/Training.qml
