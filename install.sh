@@ -14,6 +14,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_URL="https://github.com/CosmicIndustries/fgfs-mga"
 FGDATA_URL="https://sourceforge.net/projects/flightgear/files/release-2024.1/FlightGear-2024.1.7-data.txz/download"
+FGDATA_SHA256="46e831109911a067f34b7b14d01f8a2fce8a783c84738e8e203760ceb3406ac4"
 
 DRY=0; UNDO=0; WITH_FGFS=0; WITH_FGDATA=0; PASS=()
 for a in "$@"; do
@@ -191,12 +192,17 @@ if (( WITH_FGDATA )); then
       arc="$HOME/.cache/fgfs-mga/FlightGear-2024.1.7-data.txz"
       say "  downloading (resumes if stopped): $arc"
       if curl -fL --retry 8 --retry-all-errors --progress-bar -C - -o "$arc" "$FGDATA_URL"; then
-        un="$HOME/.fgfs/.fgdata-unpack"; rm -rf -- "$un"; mkdir -p "$un"
-        if tar xJf "$arc" -C "$un" && [[ -f "$un/fgdata_2024_1/version" ]]; then
-          mv -- "$un/fgdata_2024_1" "$fgdata"; rm -rf -- "$un" "$arc"
-          mkdir -p "$BK"; printf 'created\t%s\t-\n' "$fgdata" >> "$BK/manifest"
-          say "  unpacked: $fgdata ($(cat "$fgdata/version"))"
-        else rm -rf -- "$un"; say "  the archive didn't unpack; run this again to resume the download"
+        if ! bash "$HERE/flightgear-2024.1.7/verify-file-sha256.sh" "$FGDATA_SHA256" "$arc"; then
+          rm -f -- "$arc"
+          say "  rejected and removed the downloaded archive because its SHA-256 did not match; run again to download a fresh copy"
+        else
+          un="$HOME/.fgfs/.fgdata-unpack"; rm -rf -- "$un"; mkdir -p "$un"
+          if tar xJf "$arc" -C "$un" && [[ -f "$un/fgdata_2024_1/version" ]]; then
+            mv -- "$un/fgdata_2024_1" "$fgdata"; rm -rf -- "$un" "$arc"
+            mkdir -p "$BK"; printf 'created\t%s\t-\n' "$fgdata" >> "$BK/manifest"
+            say "  unpacked: $fgdata ($(cat "$fgdata/version"))"
+          else rm -rf -- "$un"; say "  the checksum-verified archive didn't unpack as expected; archive retained at $arc"
+          fi
         fi
       else say "  download stopped; run this again to resume it"
       fi
