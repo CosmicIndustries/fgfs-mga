@@ -215,7 +215,7 @@ OPENAL_DEVICE=""                    # source/system builds: sound device, empty 
 ADDON_ROOT=""                       # old setting; if set, the only add-on folder searched
 ADDON_DIRS=""                       # empty = $FG_HOME_DIR/Addons $FG_ROOT_DIR/Addons $FG_HOME_DIR/FlightGear-2024.1-Addons-MGA
 # Searched in that order, so Logbook finds Logbook-v2.1.0 before the older 1.5.1 copy.
-ADDONS="Logbook ATCChatter SpokenATC SpokenGCA PAR RedGriffinATC landing_rate which-runway"
+ADDONS="Logbook ATCChatter SpokenATC SpokenGCA PAR RedGriffinATC landing_rate which-runway mga-checklist"
 INPUT_MODE="event"                  # event | joystick | both | off (this kernel has no joydev, so event)
 AUDIO_FIX=1                         # unmute the board's ES8316 codec and the fgfs stream once sound starts
 OUTPUT_WAKE=1                       # before each flight, reset any running sound output whose device has
@@ -4397,7 +4397,7 @@ DEFAULT_BUILD="source"                       # source | aeonwave | system
 #FGFS_BIN_SYSTEM="/usr/local/bin/fgfs"
 #FG_ROOT_DIR="\$HOME/.fgfs/fgdata_2024_1"
 #AIRCRAFT_DIRS="\$HOME/.fgfs/Aircraft"
-#ADDONS="Logbook ATCChatter SpokenATC SpokenGCA PAR RedGriffinATC landing_rate which-runway"
+#ADDONS="Logbook ATCChatter SpokenATC SpokenGCA PAR RedGriffinATC landing_rate which-runway mga-checklist"
 #TERRASYNC=1
 #INPUT_MODE="event"                         # event | joystick | both | off
 #AUDIO_FIX=1                                # unmute the ES8316 codec and fgfs stream at start

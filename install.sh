@@ -89,6 +89,12 @@ for f in "$HERE"/launcher/addons/mga-launcher-extras/*; do
   place "$f" "$HOME/.fgfs/fgfs-mga-addons/mga-launcher-extras/${f##*/}"
 done
 
+say "== in-flight checklist add-on (Ctrl-K in flight)"
+while IFS= read -r f; do
+  sub="${f#"$HERE"/launcher/addons/mga-checklist/}"
+  place "$f" "$HOME/.fgfs/FlightGear-2024.1-Addons-MGA/mga-checklist/$sub"
+done < <(find "$HERE/launcher/addons/mga-checklist" -type f ! -path '*/tools/*' ! -name '*.pyc' | sort)
+
 say "== ROCK 5B performance profiles (yours are kept if you have them)"
 for f in "$HERE"/launcher/config/flightgear-rock5b/*; do
   d="$HOME/.config/flightgear-rock5b/${f##*/}"

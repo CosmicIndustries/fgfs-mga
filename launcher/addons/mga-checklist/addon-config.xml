@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- mga-checklist: Ctrl-K shows or hides the in-flight checklist. -->
+<PropertyList>
+    <input>
+        <keyboard>
+            <key n="11">
+                <name>Ctrl-K</name>
+                <desc>Show or hide the in-flight checklist (mga-checklist)</desc>
+                <binding>
+                    <command>nasal</command>
+                    <script>if (contains(globals, "mgaChecklist")) mgaChecklist.toggle();</script>
+                </binding>
+            </key>
+        </keyboard>
+    </input>
+</PropertyList>

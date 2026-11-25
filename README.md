@@ -32,6 +32,7 @@ What's where once it's installed:
 | `~/.local/bin/fgfs-mga` | the launcher (`fgfs-mga --launcher` opens FlightGear's launcher window with the MGA pages) |
 | `~/.local/share/fgfs-mga/tools/` | the tools behind `fgfs-mga gui`, `controller`, `controls`, `ffb`, `joystick-test`, `event-input`, `update`, `scenery-audit`, `aeonwave-test`, plus the TerraSync and ArcGIS scenery downloaders and `fgfs-mga-photo-dds` (compressed photo scenery) |
 | `~/.fgfs/fgfs-mga-addons/mga-launcher-extras/` | the add-on the launcher's Assists & start state options use |
+| `~/.fgfs/FlightGear-2024.1-Addons-MGA/mga-checklist/` | the in-flight checklist (Ctrl-K, or the Checklist menu): lines go green as you set each control |
 | `~/.config/fgfs-mga/config` | your settings (never overwritten) |
 | `~/.config/flightgear-rock5b/` | the low / balanced / visual / performance profiles for `fgfs-mga gui` |
 

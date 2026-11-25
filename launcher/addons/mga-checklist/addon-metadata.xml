@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- mga-checklist: in-flight checklist tied to each cockpit control (fgfs-mga, GPL-2.0-or-later) -->
+<PropertyList>
+    <meta>
+        <file-type type="string">FlightGear add-on metadata</file-type>
+        <format-version type="int">1</format-version>
+    </meta>
+    <addon>
+        <identifier type="string">org.cosmicindustries.mga-checklist</identifier>
+        <name type="string">MGA checklist</name>
+        <version type="string">1.0.0</version>
+        <authors>
+            <author>
+                <name type="string">Cosmic Industries LLC</name>
+            </author>
+        </authors>
+        <short-description type="string">On-screen checklist whose lines turn green as you set each control.</short-description>
+        <long-description type="string">Shows the aircraft's checklist in flight (Ctrl-K). Lines tied to a control or gauge go green by themselves when it is set, and show the control's live state; other lines are ticked with a click. Its tied checklists also colour Help > Aircraft Checklists.</long-description>
+        <license>
+            <designation type="string">GPL-2.0-or-later</designation>
+        </license>
+        <min-FG-version type="string">2020.3.0</min-FG-version>
+        <max-FG-version type="string">none</max-FG-version>
+        <tags>
+            <tag type="string">checklist</tag>
+            <tag type="string">training</tag>
+        </tags>
+    </addon>
+</PropertyList>
