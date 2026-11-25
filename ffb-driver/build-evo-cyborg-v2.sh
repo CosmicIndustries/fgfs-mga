@@ -24,7 +24,7 @@ command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required" >&2; e
   exit 1
 }
 
-rm -rf -- evo-cyborg-v2
+bash "$SCRIPT_DIR/preserve-generated-dir.sh" evo-cyborg-v2
 cp -a evo-cyborg evo-cyborg-v2
 rm -f -- evo-cyborg-v2/*.o evo-cyborg-v2/*.ko evo-cyborg-v2/*.mod* evo-cyborg-v2/.*.cmd 2>/dev/null || true
 
