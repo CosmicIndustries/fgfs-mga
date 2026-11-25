@@ -60,6 +60,9 @@ run_installer kernel-a off
 [[ "$(cat "$FFB_CONFIG_ROOT/evo-ffb.conf")" == 'old config target' ]] || fail 'previous config target content changed'
 pass 'previous module and symlink config are restored; repeated install is idempotent'
 
+# Reset the shared test config path so this next case truly starts with no config.
+rm -f -- "$FFB_CONFIG_ROOT/evo-ffb.conf"
+
 # When no prior paths existed, off removes only the paths this installer created.
 run_installer kernel-b
 [[ -f "$FFB_MODULE_ROOT/kernel-b/extra/hid_universal_pidff.ko" ]] || fail 'kernel-b module missing after install'
