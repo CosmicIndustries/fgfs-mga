@@ -1,0 +1,40 @@
+name: FGData integrity checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'flightgear-2024.1.7/verify-file-sha256.sh'
+      - 'flightgear-2024.1.7/tests/test-fgdata-checksum.sh'
+      - '.github/workflows/fgdata-integrity-checks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'flightgear-2024.1.7/verify-file-sha256.sh'
+      - 'flightgear-2024.1.7/tests/test-fgdata-checksum.sh'
+      - '.github/workflows/fgdata-integrity-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checksum:
+    name: FGData archive checksum tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check shell syntax
+        run: |
+          bash -n install.sh
+          bash -n flightgear-2024.1.7/verify-file-sha256.sh
+          bash -n flightgear-2024.1.7/tests/test-fgdata-checksum.sh
+
+      - name: Test checksum success and failure cases
+        run: bash flightgear-2024.1.7/tests/test-fgdata-checksum.sh

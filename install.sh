@@ -14,6 +14,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_URL="https://github.com/CosmicIndustries/fgfs-mga"
 FGDATA_URL="https://sourceforge.net/projects/flightgear/files/release-2024.1/FlightGear-2024.1.7-data.txz/download"
+FGDATA_SHA256="46e831109911a067f34b7b14d01f8a2fce8a783c84738e8e203760ceb3406ac4"
 
 DRY=0; UNDO=0; WITH_FGFS=0; WITH_FGDATA=0; PASS=()
 for a in "$@"; do
@@ -37,13 +38,39 @@ warn() { printf 'NOTE: %s\n' "$*"; }
 
 # ---------------- undo ----------------
 if (( UNDO )); then
-  last="$(find "$SHARE" -maxdepth 2 -path '*/setup-backup-*/manifest' 2>/dev/null | sort | tail -n 1)"; last="${last%/manifest}"
+  last="$(find "$SHARE" -maxdepth 2 -path '*/setup-backup-*/manifest' 2>/dev/null | sort | tail -n 1)"
+  last="${last%/manifest}"
   [[ -n "$last" && -f "$last/manifest" ]] || { say "Nothing to undo (no setup-backup-* in $SHARE)."; exit 1; }
   say "Undoing $last"
   while IFS=$'\t' read -r kind dest saved; do
     case "$kind" in
-      replaced) (( DRY )) || cp -p -- "$saved" "$dest"; say "  restored $dest" ;;
-      created)  (( DRY )) || { mkdir -p "$last/created"; mv -f -- "$dest" "$last/created/" 2>/dev/null; }; say "  removed $dest (kept in $last/created/)" ;;
+      replaced)
+        if (( DRY )); then
+          say "  [dry-run] would restore $dest"
+        else
+          [[ -e "$saved" || -L "$saved" ]] || { say "ERROR: backup is missing: $saved" >&2; exit 1; }
+          rm -f -- "$dest" || { say "ERROR: could not remove installed path $dest" >&2; exit 1; }
+          mkdir -p "$(dirname "$dest")" || { say "ERROR: could not recreate destination directory for $dest" >&2; exit 1; }
+          cp -a -- "$saved" "$dest" || { say "ERROR: could not restore $dest from $saved" >&2; exit 1; }
+          say "  restored $dest"
+        fi
+        ;;
+      created)
+        if (( DRY )); then
+          say "  [dry-run] would remove $dest (retaining it under $last/created/)"
+        elif [[ -e "$dest" || -L "$dest" ]]; then
+          case "$dest" in
+            "$HOME"/*) relative="${dest#"$HOME"/}" ;;
+            *) relative="external/${dest#/}" ;;
+          esac
+          retained="$last/created/$relative"
+          mkdir -p "$(dirname "$retained")" || { say "ERROR: could not create undo retention directory for $dest" >&2; exit 1; }
+          mv -- "$dest" "$retained" || { say "ERROR: could not retain created path $dest" >&2; exit 1; }
+          say "  removed $dest (retained at $retained)"
+        else
+          say "  already absent: $dest"
+        fi
+        ;;
     esac
   done < <(tac "$last/manifest")
   (( DRY )) || mv -- "$last" "${last/setup-backup-/setup-undone-}"
@@ -54,23 +81,30 @@ fi
 (( DRY )) && say "DRY RUN: nothing will be changed."
 [[ "$(uname -m)" == aarch64 ]] || warn "this is $(uname -m); the FlightGear builds here are for aarch64 (ROCK 5B / RK3588). The scripts still install."
 
-# place SRC DEST [MODE]: copy if different, back up what it replaces, note it for --undo
-place() {
-  local src="$1" dest="$2" mode="${3:-644}"
-  if [[ -f "$dest" ]] && cmp -s -- "$src" "$dest"; then return 0; fi
-  if (( DRY )); then say "  [dry-run] would write $dest"; return 0; fi
+# Record the destination's prior state before modifying it. Only regular files
+# and symlinks are supported destinations; directories/special files are refused.
+record_destination() {
+  local dest="$1" saved relative
+  if [[ -d "$dest" && ! -L "$dest" ]]; then
+    say "ERROR: destination is a directory; refusing to replace it: $dest" >&2
+    return 1
+  fi
   mkdir -p "$(dirname "$dest")" "$BK" || {
     say "ERROR: could not create the destination or backup directory for $dest" >&2
     return 1
   }
-  if [[ -f "$dest" ]]; then
-    local saved="$BK/files/${dest#"$HOME"/}"
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    case "$dest" in
+      "$HOME"/*) relative="${dest#"$HOME"/}" ;;
+      *) relative="external/${dest#/}" ;;
+    esac
+    saved="$BK/files/$relative"
     mkdir -p "$(dirname "$saved")" || {
       say "ERROR: could not create backup directory for $dest" >&2
       return 1
     }
-    cp -p -- "$dest" "$saved" || {
-      say "ERROR: could not back up existing file $dest" >&2
+    cp -a -- "$dest" "$saved" || {
+      say "ERROR: could not back up existing path $dest" >&2
       return 1
     }
     printf 'replaced\t%s\t%s\n' "$dest" "$saved" >> "$BK/manifest" || {
@@ -80,19 +114,44 @@ place() {
     say "  updated $dest (old copy in $BK)"
   else
     printf 'created\t%s\t-\n' "$dest" >> "$BK/manifest" || {
-      say "ERROR: could not record new file $dest" >&2
+      say "ERROR: could not record new path $dest" >&2
       return 1
     }
     say "  added $dest"
   fi
+}
+
+# place SRC DEST [MODE]: copy if different, back up what it replaces, note it for --undo
+place() {
+  local src="$1" dest="$2" mode="${3:-644}"
+  if [[ -f "$dest" && ! -L "$dest" ]] && cmp -s -- "$src" "$dest"; then return 0; fi
+  if (( DRY )); then say "  [dry-run] would write $dest"; return 0; fi
+  record_destination "$dest" || return 1
+  # Replace a symlink itself, never follow it and write through its target.
+  if [[ -L "$dest" ]]; then rm -f -- "$dest" || { say "ERROR: could not remove destination symlink $dest" >&2; return 1; }; fi
   install -m "$mode" -- "$src" "$dest" || {
     say "ERROR: could not install $src to $dest" >&2
     return 1
   }
 }
 
+place_link() {
+  local target="$1" dest="$2"
+  if [[ -L "$dest" && "$(readlink -- "$dest")" == "$target" ]]; then return 0; fi
+  if (( DRY )); then say "  [dry-run] would link $dest -> $target"; return 0; fi
+  record_destination "$dest" || return 1
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    rm -f -- "$dest" || { say "ERROR: could not remove existing link destination $dest" >&2; return 1; }
+  fi
+  ln -s -- "$target" "$dest" || { say "ERROR: could not create symlink $dest -> $target" >&2; return 1; }
+}
+
 place_or_die() {
   place "$@" || exit 1
+}
+
+place_link_or_die() {
+  place_link "$@" || exit 1
 }
 
 # ---------------- 1. the launcher (its own installer: backups, shims, menu entry) ----------------
@@ -144,23 +203,18 @@ if (( WITH_FGFS )); then
       curl -fL --retry 5 --retry-all-errors --progress-bar -o "$tmp/$a" "$REPO_URL/releases/latest/download/$a" || { say "  download failed: $a"; ok=0; break; }
     done
     if (( ok )) && ( cd "$tmp" && sha256sum -c --quiet SHA256SUMS ); then
-      mkdir -p "$rel/bin" "$rel/lib" "$BK"
+      mkdir -p "$rel/bin" "$rel/lib" || { say "  ERROR: could not create release directories under $rel" >&2; exit 1; }
       for a in fgfs-2024.1.7-openal-aarch64 fgfs-2024.1.7-aeonwave-aarch64; do
-        [[ -f "$rel/bin/$a" ]] || printf 'created\t%s\t-\n' "$rel/bin/$a" >> "$BK/manifest"
-        install -m 755 "$tmp/$a" "$rel/bin/$a"
+        place_or_die "$tmp/$a" "$rel/bin/$a" 755
       done
-      [[ -f "$rel/lib/libaax.so.4.0.0" ]] || printf 'created\t%s\t-\n' "$rel/lib/libaax.so.4.0.0" >> "$BK/manifest"
-      install -m 644 "$tmp/libaax.so.4.0.0" "$rel/lib/libaax.so.4.0.0"
-      ln -sf libaax.so.4.0.0 "$rel/lib/libaax.so.4"
+      place_or_die "$tmp/libaax.so.4.0.0" "$rel/lib/libaax.so.4.0.0" 644
+      place_link_or_die libaax.so.4.0.0 "$rel/lib/libaax.so.4"
       say "  checked and installed in $rel"
       if [[ -x "$own_new" ]]; then
         say "  you have your own 2024.1.7 build ($own_new); fgfs-mga keeps using it"
       elif ! grep -q 'install.sh --with-fgfs' "$CONF" 2>/dev/null; then
-        if [[ -f "$CONF" ]]; then
-          saved="$BK/files/.config/fgfs-mga/config"; mkdir -p "$(dirname "$saved")"; cp -p -- "$CONF" "$saved"
-          printf 'replaced\t%s\t%s\n' "$CONF" "$saved" >> "$BK/manifest"
-        else mkdir -p "$(dirname "$CONF")"; printf 'created\t%s\t-\n' "$CONF" >> "$BK/manifest"
-        fi
+        record_destination "$CONF" || exit 1
+        if [[ -L "$CONF" ]]; then rm -f -- "$CONF" || { say "ERROR: could not replace config symlink $CONF" >&2; exit 1; }; fi
         cat >> "$CONF" <<'EOF'
 
 # added by install.sh --with-fgfs: the release builds (delete these lines to use your own builds)
@@ -181,8 +235,12 @@ fi
 fgdata="$HOME/.fgfs/fgdata_2024_1"
 if (( WITH_FGDATA )); then
   say "== FlightGear 2024.1.7 data"
-  if [[ -f "$fgdata/version" ]]; then say "  already there: $fgdata ($(cat "$fgdata/version"))"
-  elif (( DRY )); then say "  [dry-run] would download 1.9 GB and unpack it to $fgdata (about 3.5 GB)"
+  if [[ -f "$fgdata/version" && ! -L "$fgdata/version" ]]; then
+    say "  already there: $fgdata ($(cat "$fgdata/version"))"
+  elif [[ -e "$fgdata" || -L "$fgdata" ]]; then
+    say "  not installed: $fgdata already exists but is not a recognized versioned FGData tree; it was left untouched."
+  elif (( DRY )); then
+    say "  [dry-run] would download 1.9 GB, verify SHA-256, and safely unpack it to $fgdata (about 3.5 GB)"
   else
     free_kb="$(df -Pk "$HOME" | awk 'NR==2{print $4}')"
     if (( free_kb < 6000000 )); then say "  not enough space: needs about 6 GB free in $HOME"
@@ -191,12 +249,21 @@ if (( WITH_FGDATA )); then
       arc="$HOME/.cache/fgfs-mga/FlightGear-2024.1.7-data.txz"
       say "  downloading (resumes if stopped): $arc"
       if curl -fL --retry 8 --retry-all-errors --progress-bar -C - -o "$arc" "$FGDATA_URL"; then
-        un="$HOME/.fgfs/.fgdata-unpack"; rm -rf -- "$un"; mkdir -p "$un"
-        if tar xJf "$arc" -C "$un" && [[ -f "$un/fgdata_2024_1/version" ]]; then
-          mv -- "$un/fgdata_2024_1" "$fgdata"; rm -rf -- "$un" "$arc"
-          mkdir -p "$BK"; printf 'created\t%s\t-\n' "$fgdata" >> "$BK/manifest"
-          say "  unpacked: $fgdata ($(cat "$fgdata/version"))"
-        else rm -rf -- "$un"; say "  the archive didn't unpack; run this again to resume the download"
+        if bash "$HERE/flightgear-2024.1.7/install-fgdata-safe.sh" "$arc" "$fgdata" "$FGDATA_SHA256"; then
+          rm -f -- "$arc"
+          if mkdir -p "$BK" && printf 'created\t%s\t-\n' "$fgdata" >> "$BK/manifest"; then
+            say "  unpacked: $fgdata ($(cat "$fgdata/version"))"
+          else
+            say "  ERROR: FGData was installed at $fgdata but the undo manifest could not be recorded; do not remove it until it is backed up." >&2
+          fi
+        else
+          fgdata_status=$?
+          if (( fgdata_status == 65 )); then
+            rm -f -- "$arc"
+            say "  rejected and removed the downloaded archive because its SHA-256 did not match; run again to download a fresh copy"
+          else
+            say "  FGData install failed (exit $fgdata_status); archive retained at $arc and existing data was left untouched"
+          fi
         fi
       else say "  download stopped; run this again to resume it"
       fi
