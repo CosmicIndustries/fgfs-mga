@@ -1,0 +1,48 @@
+name: Launcher checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launcher:
+    name: Launcher and controls tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Ubuntu Python test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-evdev=1.7.0+dfsg-1build1 \
+            python3-pyqt5=5.15.10+dfsg-1build6
+
+      - name: Rebuild generated installer and audit script
+        run: |
+          bash launcher/build.sh
+          git diff --exit-code -- launcher/install-fgfs-mga.sh launcher/fgfs-audit.sh
+
+      - name: Check shell syntax
+        run: |
+          bash -n install.sh
+          bash -n launcher/build.sh
+          bash -n launcher/install-fgfs-mga.sh
+          bash -n launcher/fgfs-audit.sh
+          bash -n launcher/src/fgfs-mga
+          bash -n launcher/src/install-body.sh
+          bash -n launcher/tests/test.sh
+
+      - name: Run launcher, controls, FFB bridge and Qt tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: bash launcher/tests/test.sh

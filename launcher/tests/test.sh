@@ -206,4 +206,12 @@ has "$out" "moved: fgfs-mga-training" "archive moves stale copy"
 [[ -f "$DL/patch_launcher_live_weather.py" && -f "$DL/fg_weather_in.xml" && ! -e "$DL/fg_aircraft_sweeper.py" ]] && ok "archive keeps patches and protocol files" || bad "archive selection"
 
 python3 "$ROOT/tests/controls_test.py" >/dev/null 2>&1 && ok "controls wizard walk-through (tests/controls_test.py)" || bad "controls wizard walk-through: run python3 tests/controls_test.py"
+
+# The Qt window test is optional on minimal systems; CI installs PyQt5 and runs it.
+if python3 -c 'import PySide6' >/dev/null 2>&1 || python3 -c 'import PyQt5' >/dev/null 2>&1 || python3 -c 'import PySide2' >/dev/null 2>&1; then
+  QT_QPA_PLATFORM=offscreen python3 "$ROOT/tests/qt_test.py" >/dev/null 2>&1 && ok "Qt controls window (tests/qt_test.py)" || bad "Qt controls window: run QT_QPA_PLATFORM=offscreen python3 tests/qt_test.py"
+else
+  echo "SKIP  Qt controls window (install PyQt5, PySide6 or PySide2)"
+fi
+
 echo; echo "$N checks"; (( FAIL )) && { echo "SOME TESTS FAILED"; exit 1; } || echo "ALL TESTS PASSED"

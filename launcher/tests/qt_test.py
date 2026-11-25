@@ -92,12 +92,14 @@ app.processEvents()
 # assign aileron by moving the Evo's X
 win.axes.pick("aileron")
 win.axes.assign()
+win.tick(poll=False)
 check(ses.capture and ses.capture[0] == "aileron", "Assign starts listening for the aileron")
-check(win.status.property("capture") in (True, None) or True, "status bar shows the capture")
+check(win.status.property("capture") is True, "status bar enters capture state")
 for v in (2400, 3200, 4000):
     evo.set(0, v)
 win.tick()
 check("aileron" in ses.mapping["axes"] and ses.mapping["axes"]["aileron"]["code"] == 0, "moving X binds the aileron")
+check(win.status.property("capture") is False, "status bar leaves capture state after binding")
 for v in (0, 4096, 2048):
     evo.set(0, v)
 win.tick()
