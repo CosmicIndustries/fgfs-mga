@@ -182,8 +182,12 @@ fi
 fgdata="$HOME/.fgfs/fgdata_2024_1"
 if (( WITH_FGDATA )); then
   say "== FlightGear 2024.1.7 data"
-  if [[ -f "$fgdata/version" ]]; then say "  already there: $fgdata ($(cat "$fgdata/version"))"
-  elif (( DRY )); then say "  [dry-run] would download 1.9 GB and unpack it to $fgdata (about 3.5 GB)"
+  if [[ -f "$fgdata/version" && ! -L "$fgdata/version" ]]; then
+    say "  already there: $fgdata ($(cat "$fgdata/version"))"
+  elif [[ -e "$fgdata" || -L "$fgdata" ]]; then
+    say "  not installed: $fgdata already exists but is not a recognized versioned FGData tree; it was left untouched."
+  elif (( DRY )); then
+    say "  [dry-run] would download 1.9 GB, verify SHA-256, and safely unpack it to $fgdata (about 3.5 GB)"
   else
     free_kb="$(df -Pk "$HOME" | awk 'NR==2{print $4}')"
     if (( free_kb < 6000000 )); then say "  not enough space: needs about 6 GB free in $HOME"
@@ -192,16 +196,20 @@ if (( WITH_FGDATA )); then
       arc="$HOME/.cache/fgfs-mga/FlightGear-2024.1.7-data.txz"
       say "  downloading (resumes if stopped): $arc"
       if curl -fL --retry 8 --retry-all-errors --progress-bar -C - -o "$arc" "$FGDATA_URL"; then
-        if ! bash "$HERE/flightgear-2024.1.7/verify-file-sha256.sh" "$FGDATA_SHA256" "$arc"; then
+        if bash "$HERE/flightgear-2024.1.7/install-fgdata-safe.sh" "$arc" "$fgdata" "$FGDATA_SHA256"; then
           rm -f -- "$arc"
-          say "  rejected and removed the downloaded archive because its SHA-256 did not match; run again to download a fresh copy"
-        else
-          un="$HOME/.fgfs/.fgdata-unpack"; rm -rf -- "$un"; mkdir -p "$un"
-          if tar xJf "$arc" -C "$un" && [[ -f "$un/fgdata_2024_1/version" ]]; then
-            mv -- "$un/fgdata_2024_1" "$fgdata"; rm -rf -- "$un" "$arc"
-            mkdir -p "$BK"; printf 'created\t%s\t-\n' "$fgdata" >> "$BK/manifest"
+          if mkdir -p "$BK" && printf 'created\t%s\t-\n' "$fgdata" >> "$BK/manifest"; then
             say "  unpacked: $fgdata ($(cat "$fgdata/version"))"
-          else rm -rf -- "$un"; say "  the checksum-verified archive didn't unpack as expected; archive retained at $arc"
+          else
+            say "  ERROR: FGData was installed at $fgdata but the undo manifest could not be recorded; do not remove it until it is backed up." >&2
+          fi
+        else
+          fgdata_status=$?
+          if (( fgdata_status == 65 )); then
+            rm -f -- "$arc"
+            say "  rejected and removed the downloaded archive because its SHA-256 did not match; run again to download a fresh copy"
+          else
+            say "  FGData install failed (exit $fgdata_status); archive retained at $arc and existing data was left untouched"
           fi
         fi
       else say "  download stopped; run this again to resume it"
