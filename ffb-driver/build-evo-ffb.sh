@@ -28,7 +28,7 @@ done
 bash "$SCRIPT_DIR/bootstrap-driver-sources.sh"
 
 for variant in evo-universal evo-cyborg; do
-  rm -rf -- "$variant"
+  bash "$SCRIPT_DIR/preserve-generated-dir.sh" "$variant"
   mkdir -p "$variant"
   git -C "$SCRIPT_DIR/universal-pidff" archive HEAD | tar -x -C "$variant"
 done
