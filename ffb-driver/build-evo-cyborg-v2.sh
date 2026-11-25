@@ -1,45 +1,47 @@
-#!/bin/bash
-# evo-cyborg-v2 = evo-cyborg (the force feedback driver that works) with its error path fixed: when force
-# feedback setup fails after the stick has started, it now stops the stick again (hid_hw_stop), so a failed
-# load can't leave dead copies of the Evo behind. Builds only, at low priority; evo-cyborg is left as is.
-set -u
-cd "$(dirname "$0")"
-exec > build-evo-cyborg-v2.log 2>&1
-rm -rf evo-cyborg-v2
-cp -r evo-cyborg evo-cyborg-v2
-rm -f evo-cyborg-v2/*.o evo-cyborg-v2/*.ko evo-cyborg-v2/*.mod* evo-cyborg-v2/.*.cmd 2>/dev/null
-python3 - <<'EOF'
-p = "evo-cyborg-v2/hid-universal-pidff.c"
-s = open(p).read()
-a = '''	error = init_function(hdev, id->driver_data);
-	if (error) {
-		hid_warn(hdev, "Error initialising force feedback\\n");
-		goto err;
-	}
-'''
-assert s.count(a) == 1, "anchor"
-s = s.replace(a, '''	error = init_function(hdev, id->driver_data);
-	if (error) {
-		hid_warn(hdev, "Error initialising force feedback\\n");
-		goto err_stop;
-	}
-''')
-b = '''	return 0;
-err:
-	return error;
+#!/usr/bin/env bash
+# Build evo-cyborg-v2: the Cyborg driver-managed variant with probe-failure cleanup.
+# Run build-evo-ffb.sh first; this script will refuse to use an absent base variant.
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+LOG="$SCRIPT_DIR/build-evo-cyborg-v2.log"
+exec > >(tee "$LOG") 2>&1
+
+KERNEL_RELEASE="$(uname -r)"
+KERNEL_BUILD="/lib/modules/$KERNEL_RELEASE/build"
+
+command -v make >/dev/null 2>&1 || { echo "ERROR: make is required"; exit 1; }
+command -v modinfo >/dev/null 2>&1 || { echo "ERROR: modinfo is required (install kmod)"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required"; exit 1; }
+[[ -d "$KERNEL_BUILD" ]] || {
+  echo "ERROR: matching kernel headers are missing: $KERNEL_BUILD"
+  exit 1
 }
-'''
-assert s.count(b) == 1, "anchor2"
-s = s.replace(b, '''	return 0;
-err_stop:
-	hid_hw_stop(hdev);	/* undo hid_hw_start, so no input devices are left behind */
-err:
-	return error;
+[[ -f evo-cyborg/hid-universal-pidff.c ]] || {
+  echo "ERROR: evo-cyborg source is absent."
+  echo "Run: bash $SCRIPT_DIR/build-evo-ffb.sh"
+  exit 1
 }
-''')
-open(p, "w").write(s)
-print("patched")
-EOF
-( cd evo-cyborg-v2 && nice -n 19 make -C /lib/modules/$(uname -r)/build M="$PWD" -j2 modules ) || exit 1
-modinfo evo-cyborg-v2/hid_universal_pidff.ko | grep -E 'vermagic|06A3'
-echo DONE
+
+rm -rf -- evo-cyborg-v2
+cp -a evo-cyborg evo-cyborg-v2
+rm -f -- evo-cyborg-v2/*.o evo-cyborg-v2/*.ko evo-cyborg-v2/*.mod* evo-cyborg-v2/.*.cmd 2>/dev/null || true
+
+python3 "$SCRIPT_DIR/patch-evo-cyborg-v2.py"
+echo "=== Building evo-cyborg-v2 for $KERNEL_RELEASE"
+(
+  cd evo-cyborg-v2
+  nice -n 19 make -C "$KERNEL_BUILD" M="$PWD" -j2 modules
+)
+
+module="$SCRIPT_DIR/evo-cyborg-v2/hid_universal_pidff.ko"
+[[ -s "$module" ]] || { echo "ERROR: expected module was not produced: $module"; exit 1; }
+vermagic="$(modinfo -F vermagic "$module")"
+[[ "${vermagic%% *}" == "$KERNEL_RELEASE" ]] || {
+  echo "ERROR: module vermagic '$vermagic' does not match running kernel '$KERNEL_RELEASE'"
+  exit 1
+}
+modinfo "$module" | grep -E '^(alias|vermagic):' || true
+echo "DONE: $module"
+echo "Build log: $LOG"

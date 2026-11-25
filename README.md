@@ -10,7 +10,7 @@ FlightGear 2024.1.7 set up for flight-training practice on a ROCK 5B+ (RK3588, a
 | `flightgear-2024.1.7/` | The script that builds SimGear and FlightGear 2024.1.7 twice, once with OpenAL and once with AeonWave sound. Also the local patches on top of the 2024.1.7 tags (the MGA training page and region map in the Qt launcher, the Controls page, full Settings and Environment pages, the Location map overlay and the Before you fly panel, and the sound fixes), and the same changes against 2024.1.1. |
 | `aeonwave/` | Fixes to the AeonWave sound library (adalinbv/aax): the NEON mixer that muted 3D sounds, and the WAV reader that crashed on tagged files. (A first fix for Red Griffin voices playing 2.4x slow left FlightGear silent and was withdrawn; the slow voice is still open.) |
 | `simgear/` | SimGear AeonWave sound-manager fixes for Red Griffin ATC voices: a released source counts as stopped, so there's no "unknown source id" flood, and the mixer stops cleanly at exit. |
-| `ffb-driver/` | Force feedback for the Saitek Cyborg Evo Force on a kernel without `CONFIG_HID_PID`. The scripts build a patched [universal-pidff](https://github.com/JacKeTUs/universal-pidff) module and load it at boot, plus stick and effect tests. |
+| `ffb-driver/` | Force feedback for the Saitek Cyborg Evo Force on a kernel without `CONFIG_HID_PID`. Pinned source bootstrap, local driver patches, build/install/test scripts and [the reproducible FFB build guide](ffb-driver/README.md). |
 
 ## Quick start: a fresh board
 

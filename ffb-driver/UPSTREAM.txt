@@ -1,2 +1,19 @@
-upstream universal-pidff commit efd9b4af075d98b12140d70474e8fa221137363e (Tue Sep 22 12:09:11 2026 +0300)
-https://github.com/JacKeTUs/universal-pidff.git
+Force-feedback source dependencies are pinned in SOURCES.lock.
+
+1. universal-pidff
+   Repository: https://github.com/JacKeTUs/universal-pidff
+   Commit: efd9b4af075d98b12140d70474e8fa221137363e
+   Role: current HID PIDFF implementation and wrapper used for both candidates.
+   License: GPL-2.0-or-later.
+
+2. Cyborg-specific PIDFF implementation
+   Repository: https://github.com/zanppa/hid-pidff
+   Commit: 37709a8efa76bef8bd82d2b89b478019700ecaff
+   Role: device-managed memory implementation adapted for the Cyborg Evo Force.
+   License: GPL-2.0-or-later.
+   Upstream note: this experimental driver was originally tested on Linux 4.9;
+   the local adapter and build must be validated against the target kernel.
+
+Run bootstrap-driver-sources.sh to fetch and verify these exact revisions.
+Do not silently advance either revision: update SOURCES.lock, this file, and
+the patch/source checks together when intentionally upgrading a dependency.

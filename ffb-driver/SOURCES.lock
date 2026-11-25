@@ -1,0 +1,7 @@
+# Immutable upstream revisions used by bootstrap-driver-sources.sh.
+UNIVERSAL_PIDFF_URL=https://github.com/JacKeTUs/universal-pidff.git
+UNIVERSAL_PIDFF_COMMIT=efd9b4af075d98b12140d70474e8fa221137363e
+
+# The device-managed memory implementation maintained for the Saitek Cyborg Evo Force.
+CYBORG_PIDFF_URL=https://github.com/zanppa/hid-pidff.git
+CYBORG_PIDFF_COMMIT=37709a8efa76bef8bd82d2b89b478019700ecaff
