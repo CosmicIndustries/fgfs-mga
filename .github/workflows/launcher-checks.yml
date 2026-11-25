@@ -41,8 +41,11 @@ jobs:
           bash -n launcher/src/fgfs-mga
           bash -n launcher/src/install-body.sh
           bash -n launcher/tests/test.sh
+          bash -n launcher/tests/test-root-installer.sh
 
       - name: Run launcher, controls, FFB bridge and Qt tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: bash launcher/tests/test.sh
+        run: |
+          bash launcher/tests/test-root-installer.sh
+          bash launcher/tests/test.sh
