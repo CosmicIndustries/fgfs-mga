@@ -1,0 +1,37 @@
+name: AeonWave build-copy safety checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'aeonwave/preserve-build-copy.sh'
+      - 'aeonwave/aeonwave-fixed-build.sh'
+      - 'aeonwave/test-preserve-build-copy.sh'
+      - '.github/workflows/aeonwave-copy-checks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'aeonwave/preserve-build-copy.sh'
+      - 'aeonwave/aeonwave-fixed-build.sh'
+      - 'aeonwave/test-preserve-build-copy.sh'
+      - '.github/workflows/aeonwave-copy-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-copy:
+    name: AeonWave build-copy preservation tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n aeonwave/preserve-build-copy.sh
+          bash -n aeonwave/aeonwave-fixed-build.sh
+          bash -n aeonwave/test-preserve-build-copy.sh
+      - name: Test preservation and unsafe path refusal
+        run: bash aeonwave/test-preserve-build-copy.sh
