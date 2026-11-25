@@ -15,13 +15,13 @@ KERNEL_BUILD="/lib/modules/$KERNEL_RELEASE/build"
 
 for command in git make modinfo python3 tar tee; do
   command -v "$command" >/dev/null 2>&1 || {
-    echo "ERROR: required command not found: $command"
+    echo "ERROR: required command not found: $command" >&2
     exit 1
   }
 done
 [[ -d "$KERNEL_BUILD" ]] || {
-  echo "ERROR: matching kernel headers are missing: $KERNEL_BUILD"
-  echo "Install the headers for the running kernel ($KERNEL_RELEASE), then rerun."
+  echo "ERROR: matching kernel headers are missing: $KERNEL_BUILD" >&2
+  echo "Install the headers for the running kernel ($KERNEL_RELEASE), then rerun." >&2
   exit 1
 }
 
@@ -43,12 +43,12 @@ for variant in evo-universal evo-cyborg; do
   )
   module="$SCRIPT_DIR/$variant/hid_universal_pidff.ko"
   [[ -s "$module" ]] || {
-    echo "ERROR: expected module was not produced: $module"
+    echo "ERROR: expected module was not produced: $module" >&2
     exit 1
   }
   vermagic="$(modinfo -F vermagic "$module")"
   [[ "${vermagic%% *}" == "$KERNEL_RELEASE" ]] || {
-    echo "ERROR: module vermagic '$vermagic' does not match running kernel '$KERNEL_RELEASE'"
+    echo "ERROR: module vermagic '$vermagic' does not match running kernel '$KERNEL_RELEASE'" >&2
     exit 1
   }
   modinfo "$module" | grep -E '^(alias|vermagic):' || true
