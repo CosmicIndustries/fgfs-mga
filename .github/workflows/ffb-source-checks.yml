@@ -28,6 +28,7 @@ jobs:
           bash -n ffb-driver/bootstrap-driver-sources.sh
           bash -n ffb-driver/build-evo-ffb.sh
           bash -n ffb-driver/build-evo-cyborg-v2.sh
+          bash -n ffb-driver/preserve-generated-dir.sh
           bash -n ffb-driver/install-evo-ffb-boot.sh
           bash -n ffb-driver/try-evo-ffb.sh
           bash -n ffb-driver/test-source-bootstrap.sh

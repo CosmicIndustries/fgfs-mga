@@ -1,0 +1,40 @@
+name: FFB generated directory safety checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ffb-driver/preserve-generated-dir.sh'
+      - 'ffb-driver/build-evo-ffb.sh'
+      - 'ffb-driver/build-evo-cyborg-v2.sh'
+      - 'ffb-driver/test-preserve-generated-dir.sh'
+      - '.github/workflows/ffb-generated-dir-checks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ffb-driver/preserve-generated-dir.sh'
+      - 'ffb-driver/build-evo-ffb.sh'
+      - 'ffb-driver/build-evo-cyborg-v2.sh'
+      - 'ffb-driver/test-preserve-generated-dir.sh'
+      - '.github/workflows/ffb-generated-dir-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-dirs:
+    name: FFB generated directory preservation tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: |
+          bash -n ffb-driver/preserve-generated-dir.sh
+          bash -n ffb-driver/build-evo-ffb.sh
+          bash -n ffb-driver/build-evo-cyborg-v2.sh
+          bash -n ffb-driver/test-preserve-generated-dir.sh
+      - name: Test preservation, unique backups and unsafe paths
+        run: bash ffb-driver/test-preserve-generated-dir.sh
