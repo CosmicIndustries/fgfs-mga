@@ -48,10 +48,11 @@ OFF_HOME="$ROOT/off-home"
 OFF_BIN="$ROOT/off-bin"
 make_home "$OFF_HOME"
 make_fakes "$OFF_BIN"
-MOCK_LOG="$ROOT/off.log" HOME="$OFF_HOME" PATH="$OFF_BIN:$PATH" JOBS=1 \
+OFF_LOG="$ROOT/off.log"
+MOCK_LOG="$OFF_LOG" HOME="$OFF_HOME" PATH="$OFF_BIN:$PATH" JOBS=1 \
   bash "$BUILD_SCRIPT" sg-openal fg-openal
-grep -q -- '-DENABLE_TESTS=OFF' "$MOCK_LOG" || fail 'default SimGear test option was not OFF'
-! grep -q '^ctest ' "$MOCK_LOG" || fail 'default build unexpectedly ran CTest'
+grep -q -- '-DENABLE_TESTS=OFF' "$OFF_LOG" || fail 'default SimGear test option was not OFF'
+! grep -q '^ctest ' "$ON_LOG" || fail 'default build unexpectedly ran CTest'
 ! grep -q 'test_suite' "$MOCK_LOG" || fail 'default build unexpectedly built the FlightGear test suite'
 pass 'default build keeps both upstream test suites disabled'
 
@@ -62,7 +63,8 @@ make_home "$ON_HOME"
 make_fakes "$ON_BIN"
 mkdir -p "$ON_HOME/data"
 printf 'FlightGear data fixture\n' > "$ON_HOME/data/version"
-MOCK_LOG="$ROOT/on.log" HOME="$ON_HOME" PATH="$ON_BIN:$PATH" JOBS=1 \
+ON_LOG="$ROOT/on.log"
+MOCK_LOG="$ON_LOG" HOME="$ON_HOME" PATH="$ON_BIN:$PATH" JOBS=1 \
   MGA_ENABLE_TESTS=1 FG_ROOT="$ON_HOME/data" \
   bash "$BUILD_SCRIPT" sg-openal fg-openal
 grep -q -- '-DENABLE_TESTS=ON' "$MOCK_LOG" || fail 'opt-in did not enable SimGear test apps'
@@ -76,13 +78,14 @@ MISSING_HOME="$ROOT/missing-home"
 MISSING_BIN="$ROOT/missing-bin"
 make_home "$MISSING_HOME"
 make_fakes "$MISSING_BIN"
-if MOCK_LOG="$ROOT/missing.log" HOME="$MISSING_HOME" PATH="$MISSING_BIN:$PATH" JOBS=1 \
+if MISSING_LOG="$ROOT/missing.log"
+if MOCK_LOG="$MISSING_LOG" HOME="$MISSING_HOME" PATH="$MISSING_BIN:$PATH" JOBS=1 \
   MGA_ENABLE_TESTS=1 FG_ROOT="$MISSING_HOME/no-data" \
   bash "$BUILD_SCRIPT" fg-openal; then
   fail 'FlightGear tests ran without a valid FG_ROOT'
 fi
 grep -q 'FG_ROOT must point to a FlightGear data tree' "$MISSING_HOME/builds/fg-2024.1.7/build.log" || fail 'missing FG_ROOT diagnostic absent'
-! grep -q '^ctest ' "$ROOT/missing.log" || fail 'CTest ran despite missing FG_ROOT'
+! grep -q '^ctest ' "$MISSING_LOG" || fail 'CTest ran despite missing FG_ROOT'
 pass 'test mode fails clearly when FlightGear data is missing'
 
 # Reject invalid toggle values before any build command.
