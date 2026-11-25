@@ -9,9 +9,10 @@ python3 -m py_compile "$SCRIPT_DIR/patch-evo.py" "$SCRIPT_DIR/patch-evo-cyborg-v
 
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
-cp -a "$SCRIPT_DIR/universal-pidff" "$tmp/evo-universal"
-cp -a "$SCRIPT_DIR/universal-pidff" "$tmp/evo-cyborg"
-cp -a "$SCRIPT_DIR/cyborg-hid-pidff" "$tmp/cyborg-hid-pidff"
+mkdir -p "$tmp/evo-universal" "$tmp/evo-cyborg" "$tmp/cyborg-hid-pidff"
+git -C "$SCRIPT_DIR/universal-pidff" archive HEAD | tar -x -C "$tmp/evo-universal"
+git -C "$SCRIPT_DIR/universal-pidff" archive HEAD | tar -x -C "$tmp/evo-cyborg"
+git -C "$SCRIPT_DIR/cyborg-hid-pidff" archive HEAD | tar -x -C "$tmp/cyborg-hid-pidff"
 
 (
   cd "$tmp"
