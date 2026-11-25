@@ -72,6 +72,18 @@ Keep a hand on the power/USB disconnect path. Do not treat simulated control
 forces as aircraft control feedback or as a substitute for flight-instruction
 procedures.
 
+The bundled strength test is deliberately conservative:
+
+```bash
+python3 ffb-driver/ff-strength-test.py
+```
+
+It defaults to 10% gain and scales both the individual effect parameters and
+the device master gain. Values above 25% require `--allow-high-force`, an
+interactive terminal, and an exact typed confirmation. Do not use a high-force
+setting until the low-force checks are stable and the stick can be stopped
+immediately.
+
 To install the v2 candidate for the current kernel at boot:
 
 ```bash
