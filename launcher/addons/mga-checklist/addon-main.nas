@@ -62,7 +62,8 @@ var collect = func {
                 }
                 if (find("Continued on next page", name) == 0) continue;
                 append(items, {name: name, value: string.join(" ", vals), action: size(vals) > 0,
-                               cond: it.getNode("condition"), now: it.getNode("now")});
+                               cond: it.getNode("condition"), now: it.getNode("now"),
+                               auto: condProps(it.getNode("condition"))});
             }
         }
         append(lists, {group: group, title: cl.getValue("title") or "?", items: items});
@@ -98,10 +99,32 @@ var latch = func(li) {
     }
 };
 
-var nowText = func(n) {
-    if (n == nil) return "";
-    var v = getprop(n.getValue("property") or "");
-    if (v == nil) return "";
+# The <property> paths inside an item's <condition> (at most 3, no repeats): shown as
+# the live value when the item has no <now> of its own (aircraft checklists that
+# already check themselves), so a line that checks two controls shows both.
+var condProps = func(n) {
+    var out = [];
+    var walk = func(m) {
+        foreach (var c; m.getChildren()) {
+            if (size(out) >= 3) return;
+            if (c.getName() == "property") {
+                var p = c.getValue();
+                if (p == nil or p == "") continue;
+                var seen = 0;
+                foreach (var q; out) if (q == p) seen = 1;
+                if (!seen) append(out, p);
+            } else {
+                walk(c);
+            }
+        }
+    };
+    if (n != nil) walk(n);
+    return size(out) ? out : nil;
+};
+
+var oneValue = func(n, path) {
+    var v = getprop(path);
+    if (v == nil) return nil;
     var fmt = n.getValue("format");
     var labels = n.getChildren("label");
     if (size(labels) and num(v) != nil) {
@@ -116,6 +139,39 @@ var nowText = func(n) {
     var s = n.getValue("scale");
     if (s != nil) v = v * s;
     return sprintf(fmt != nil ? fmt : "%.2f", v);
+};
+
+var autoValue = func(path) {
+    var node = props.globals.getNode(path);
+    if (node == nil) return "";
+    var v = node.getValue();
+    if (v == nil) return "";
+    if (node.getType() == "BOOL") return v ? "ON" : "OFF";
+    if (num(v) == nil) return v;
+    # 0..1 levers and positions read better as percent (throttle 25%, door 100%).
+    var leaf = node.getName();
+    if (leaf == "throttle" or leaf == "mixture" or leaf == "propeller-pitch" or leaf == "flaps"
+        or find("-norm", leaf) >= 0)
+        return sprintf("%d%%", math.round(v * 100));
+    return (v == int(v)) ? sprintf("%d", v) : sprintf("%.2f", v);
+};
+
+var nowText = func(it) {
+    var n = it.now;
+    var out = [];
+    if (n == nil) {
+        if (it.auto == nil) return "";
+        foreach (var p; it.auto) {
+            var s = autoValue(p);
+            if (s != "") append(out, s);
+        }
+        return string.join(" / ", out);
+    }
+    foreach (var p; n.getChildren("property")) {
+        var s = oneValue(n, p.getValue() or "");
+        if (s != nil) append(out, s);
+    }
+    return string.join(" / ", out);
 };
 
 var clip = func(s, n) { return size(s) > n ? substr(s, 0, n - 1) ~ "..." : s; };
@@ -206,7 +262,7 @@ var update = func {
         var col = ok ? GREEN : (it.cond != nil ? AMBER : WHITE);
         setColor(row.mark, col);
         setColor(row.name, col);
-        var nt = nowText(it.now);
+        var nt = nowText(it);
         row.name.setText(clip(it.name ~ "  ....  " ~ it.value, nt == "" ? 70 : 56));
         row.now.setText(nt);
         setColor(row.now, CYAN);

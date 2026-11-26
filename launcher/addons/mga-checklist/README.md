@@ -20,18 +20,23 @@ aircraft's checklist while you fly.
 | Aircraft | File | Tied |
 |---|---|---|
 | PA28-161 Warrior II (160 hp) | `checklists/PA28-161-160.xml` | 113 of 202 lines check themselves, 146 show the control |
+| Seneca II | `checklists/SenecaII.xml` | 44 of 85 lines check themselves, 54 show the control |
+| Cessna 182S / 182T | the aircraft's own `c182s-checklists.xml` | already ties most lines; the window shows each tied line's control |
 
-Any other aircraft uses its own checklist (no green lines, every line ticked by hand); an
-aircraft with no checklist says so.
+Any other aircraft uses its own checklist: lines the aircraft ties to a control go green by
+themselves and show that control's value, the rest are ticked by hand. An aircraft with no
+checklist says so.
 
-To rebuild the Warrior file from the aircraft's own checklist (same words and order):
+To rebuild a tied file from the aircraft's own checklist (same words and order):
 
 ```
-python3 tools/make-pa28-checklist.py ~/.fgfs/Aircraft/PA28/PA28-Checklists.xml checklists/PA28-161-160.xml
+python3 tools/make-checklist.py pa28   ~/.fgfs/Aircraft/PA28/PA28-Checklists.xml    checklists/PA28-161-160.xml
+python3 tools/make-checklist.py seneca ~/.fgfs/Aircraft/SenecaII/SenecaII-base.xml checklists/SenecaII.xml
 ```
 
-The rules at the top of that script map each line to a property; add a line there to tie
-another item. A new aircraft is a new `checklists/<aircraft id>.xml` (the id is `/sim/aircraft`).
+Each profile at the top of that script maps checklist lines to properties; add a rule there
+to tie another item. A line that already has a `<condition>` or `<now>` keeps it. A new
+aircraft is a new profile and a new `checklists/<aircraft id>.xml` (the id is `/sim/aircraft`).
 
 ## From outside
 
