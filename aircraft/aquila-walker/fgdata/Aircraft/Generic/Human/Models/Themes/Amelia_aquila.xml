@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<PropertyList>
+    <sim>
+        <walker>
+            <theme-name>Amelia Aquila Flight Suit</theme-name>
+            <character>0</character>
+            <gender>1</gender>
+            <outfit>5</outfit>
+        </walker>
+    </sim>
+</PropertyList>

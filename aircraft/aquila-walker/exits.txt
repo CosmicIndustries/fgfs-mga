@@ -1,0 +1,20 @@
+# Walker exits, x aft / y right in metres from the aircraft reference point (exits.py, 2026-11-26).
+# Planes that share a base file share its exit: Warrior/Archer/Arrow (PA28-main.xml) use the Warrior's,
+# Seneca/Seminole (SenecaII-base.xml) the Seneca's. The 182S and PA-18 keep the exits they ship with.
+warrior   side=+1 pitch=0.0 exit x=0.70 y=0.80
+archer    side=+1 pitch=0.0 exit x=0.70 y=0.80
+arrow     side=+1 pitch=0.0 exit x=0.70 y=0.80
+seneca    side=+1 pitch=5.0 exit x=1.36 y=0.95
+seminole  side=+1 pitch=5.0 exit x=1.36 y=0.95
+r22       side=-1 pitch=11.8 exit x=-0.62 y=-1.40
+r44       side=-1 pitch=2.0 exit x=-3.41 y=-1.70
+citabria  side=+1 pitch=12.0 exit x=3.56 y=0.80
+decathlon side=+1 pitch=12.5 exit x=3.72 y=0.80
+zlin      side=-1 pitch=7.8 exit x=3.60 y=-0.80
+c182rg    side=-1 pitch=9.8 exit x=2.04 y=-0.95
+c337      side=+1 pitch=1.0 exit x=-0.45 y=0.95
+dromader  side=-1 pitch=12.2 exit x=2.56 y=-0.95
+agcat     side=-1 pitch=10.2 exit x=1.28 y=-0.95
+at502b    side=-1 pitch=11.5 exit x=5.17 y=-0.80
+at802     side=-1 pitch=11.0 exit x=5.73 y=-0.80
+an2       side=-1 pitch=11.8 exit x=-1.17 y=-2.30

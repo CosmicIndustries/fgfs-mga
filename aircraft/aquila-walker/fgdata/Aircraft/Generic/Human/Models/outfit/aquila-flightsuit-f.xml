@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- Aquila Flight Program flight suit (Cosmic Industries). Same mesh as flightsuit-f.ac, own texture. -->
+<PropertyList>
+	<path>aquila-flightsuit-f.ac</path>
+	<animation>
+		<enable-hot type="bool">false</enable-hot>
+	</animation>
+</PropertyList>
