@@ -61,6 +61,7 @@ These live in the FlightGear source patch (`flightgear-2024.1.7/`), so they arri
 - **Summary**: a "Before you fly" panel: board memory and temperature, stick check, weather source and METAR, density altitude and runway wind, weight and balance, takeoff and landing estimates, sunrise, sunset and the night-currency window, scenery for the field, the instructor panel address, the aircraft checklist, and saved setups (`~/.config/fgfs-mga/setups`).
 - **Help**: a Donate to FlightGear button.
 - `aircraft/pa28-realism.py`: Warrior realism fixes, run once on the board: stall horn 5-10 kt above the stall per the POH (it sounded ~14 kt early), touchdown squeal, and POH fuel (25 gal tanks, 1 unusable). Backs up the two files it changes into the aircraft folder first.
+- `aircraft/pa28-gauges.py`: makes the PA28 EGT and oil temperature gauges read the engine model (they climbed to a fixed number before), so leaning to peak EGT works. Run once on the board; it backs up Systems/libraries.xml first.
 - `addons/mga-launcher-extras`: the FlightGear add-on that applies the launcher's fuel, payload, failure, seat, altimeter, start-state, crash-reset and auto-mixture choices. Copy it to `~/.fgfs/fgfs-mga-addons/mga-launcher-extras`; `src/fgfs-mga-arcgis` goes to `~/.local/share/fgfs-mga/tools/`.
 - Also fixes an upstream launcher bug: `LaunchConfig::getValueForKey` never closed its settings group, so named groups nested on every read.
 
