@@ -153,8 +153,8 @@ else
 #
 # Words can come in any order:  fgfs-mga seminole fast   =   fgfs-mga fast seminole
 #
-# Aircraft: warrior archer arrow seminole cabri r22 r44 citabria decathlon zlin
-#           c182 c182rg pa18 c337 dromader agcat an2   (or any aircraft id, e.g. c172p)
+# Aircraft: warrior archer arrow seminole seneca cabri r22 r44 citabria decathlon zlin
+#           c182 c182rg pa18 c337 dromader agcat at502b at802 an2   (or any aircraft id, e.g. c172p)
 # Presets:  fast balanced training high   (default: balanced)
 #           also accepted: low performance medium visual quality ultra lesson
 #
@@ -252,7 +252,7 @@ if [[ -z "$FG_SCENERY_DIRS" ]]; then
 fi
 
 PRESETS="fast balanced training high"
-FLEET_NAMES="warrior archer arrow seminole cabri r22 r44 citabria decathlon zlin c182 c182rg pa18 c337 dromader agcat an2"
+FLEET_NAMES="warrior archer arrow seminole seneca cabri r22 r44 citabria decathlon zlin c182 c182rg pa18 c337 dromader agcat at502b at802 an2"
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'fgfs-mga: %s\n' "$*" >&2; }
@@ -263,17 +263,23 @@ usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
 fleet_map() {
   case "$1" in
     warrior)                 echo "PA28 PA28-161-160" ;;
-    archer|arrow)            echo "PA28 PA28-161-180" ;;
-    seminole|seneca)         echo "SenecaII SenecaII" ;;
+    archer)                  echo "PA28 PA28-161-180" ;;
+    arrow|pa28r)             echo "PA28 PA28R-201" ;;
+    seminole|pa44)           echo "SenecaII PA44-180" ;;
+    seneca)                  echo "SenecaII SenecaII" ;;
     cabri|r22)               echo "R22 R22" ;;
     r44)                     echo "R44 raven" ;;
-    citabria|decathlon|zlin) echo "Zlin-50lx z50lx" ;;
+    citabria)                echo "Cosmic-Citabria citabria" ;;
+    decathlon)               echo "Cosmic-Decathlon decathlon" ;;
+    zlin)                    echo "Zlin-50lx z50lx" ;;
     c182)                    echo "c182s c182s" ;;
     c182rg)                  echo "c182rg c182rg" ;;
     pa18|supercub)           echo "J3Cub PA-18" ;;
     c337|skymaster)          echo "Cessna337 Cessna337" ;;
     dromader)                echo "Dromader Dromader" ;;
     agcat|g164)              echo "G-164 G-164" ;;
+    at502|at502b)            echo "Cosmic-AT502B at502b" ;;
+    at802|airtractor)        echo "Cosmic-AT802 at802" ;;
     an2)                     echo "an2 an2" ;;
     *) return 1 ;;
   esac
