@@ -465,12 +465,24 @@ preset_args() {
   case "$(preset_alias "$1")" in
     fast)
       PRESET_ARGS=(--prop:/sim/rendering/shaders/quality-level=0
+        --prop:/sim/rendering/shaders/custom-settings=false
+        --prop:/sim/rendering/clouds3d-vis-range=10000 --prop:/sim/rendering/clouds3d-detail-range=10000
+        --prop:/sim/rendering/clouds3d-density=0.25
+        --prop:/environment/fog-structure=0 --prop:/environment/air-pollution-norm=0
         --prop:/sim/rendering/shadows/enabled=false
         --prop:/sim/rendering/multi-sample-buffers=false
         --disable-random-objects --disable-random-vegetation --disable-random-buildings
         --disable-ai-traffic --fog-fastest --visibility=10000) ;;
     balanced)
       PRESET_ARGS=(--prop:/sim/rendering/shaders/quality-level=2
+        # realism round A (measured free on the board, Nov 2026): water detail, shinier aircraft finish,
+        # clouds drawn to 20 km and thicker, patchy haze. custom-settings lets the two shader levels stick.
+        --prop:/sim/rendering/shaders/custom-settings=true
+        --prop:/sim/rendering/shaders/landmass=5 --prop:/sim/rendering/shaders/transition=5
+        --prop:/sim/rendering/shaders/water=6 --prop:/sim/rendering/shaders/model=3
+        --prop:/sim/rendering/clouds3d-vis-range=20000 --prop:/sim/rendering/clouds3d-detail-range=20000
+        --prop:/sim/rendering/clouds3d-density=0.6
+        --prop:/environment/fog-structure=3 --prop:/environment/air-pollution-norm=0.2
         --prop:/sim/rendering/shadows/enabled=false
         --enable-random-objects --disable-random-vegetation --disable-random-buildings
         --disable-ai-traffic --fog-fastest --visibility=20000) ;;
@@ -480,6 +492,10 @@ preset_args() {
       PRESET_ARGS+=(--disable-real-weather-fetch --timeofday=noon "--metar=$TRAINING_METAR") ;;
     high)
       PRESET_ARGS=(--prop:/sim/rendering/shaders/quality-level=4
+        --prop:/sim/rendering/shaders/custom-settings=false
+        --prop:/sim/rendering/clouds3d-vis-range=20000 --prop:/sim/rendering/clouds3d-detail-range=20000
+        --prop:/sim/rendering/clouds3d-density=0.6
+        --prop:/environment/fog-structure=3 --prop:/environment/air-pollution-norm=0.2
         --enable-random-objects --enable-random-vegetation --enable-random-buildings
         --enable-ai-traffic --fog-nicest --visibility=40000) ;;
     *) die "unknown preset '$1' (use: $PRESETS)" ;;
