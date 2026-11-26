@@ -60,6 +60,7 @@ These live in the FlightGear source patch (`flightgear-2024.1.7/`), so they arri
 - **Location**: an overlay on the airport view with a street / topo / satellite / VFR sectional map, METAR, density altitude, the best runway for the wind, runways and frequencies, FAA charts (current d-TPP cycle worked out locally) and ArcGIS or USGS photo scenery downloads (`src/fgfs-mga-arcgis`).
 - **Summary**: a "Before you fly" panel: board memory and temperature, stick check, weather source and METAR, density altitude and runway wind, weight and balance, takeoff and landing estimates, sunrise, sunset and the night-currency window, scenery for the field, the instructor panel address, the aircraft checklist, and saved setups (`~/.config/fgfs-mga/setups`).
 - **Help**: a Donate to FlightGear button.
+- `aircraft/pa28-realism.py`: Warrior realism fixes, run once on the board: stall horn 5-10 kt above the stall per the POH (it sounded ~14 kt early), touchdown squeal, and POH fuel (25 gal tanks, 1 unusable). Backs up the two files it changes into the aircraft folder first.
 - `addons/mga-launcher-extras`: the FlightGear add-on that applies the launcher's fuel, payload, failure, seat, altimeter, start-state, crash-reset and auto-mixture choices. Copy it to `~/.fgfs/fgfs-mga-addons/mga-launcher-extras`; `src/fgfs-mga-arcgis` goes to `~/.local/share/fgfs-mga/tools/`.
 - Also fixes an upstream launcher bug: `LaunchConfig::getValueForKey` never closed its settings group, so named groups nested on every read.
 
