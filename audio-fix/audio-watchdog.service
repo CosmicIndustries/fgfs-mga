@@ -1,0 +1,13 @@
+[Unit]
+Description=Reset a frozen sound output (sink RUNNING but its ALSA device stopped)
+After=pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service
+
+[Service]
+ExecStart=%h/.local/bin/audio-watchdog
+Restart=always
+RestartSec=10
+Nice=5
+
+[Install]
+WantedBy=default.target

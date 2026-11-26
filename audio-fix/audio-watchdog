@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# audio-watchdog: keeps the board's sound outputs from staying frozen.
+#
+# On 22 Nov 2026 the ROCK 5B+'s HDMI 1 output froze: PipeWire still showed the sink RUNNING, but the
+# ALSA device underneath had stopped (state SETUP, hw_ptr not moving), so every program played into
+# nothing for a day and a half. This watches every running ALSA output sink and, when its device has
+# been stuck for two checks in a row, suspends and resumes the sink so PipeWire reopens the device.
+# It changes nothing while sound is flowing. Runs as a systemd --user service (audio-watchdog.service).
+#
+# Settings (environment): AW_INTERVAL seconds between checks (5), AW_COOLDOWN seconds before the same
+# sink may be reset again (30), AW_ITER stop after this many checks (0 = run forever).
+# Test hooks: AW_ASOUND (default /proc/asound), AW_PACTL (default pactl), AW_SLEEP (default sleep).
+set -u
+INTERVAL="${AW_INTERVAL:-5}"; COOLDOWN="${AW_COOLDOWN:-30}"; ITER="${AW_ITER:-0}"
+ASOUND="${AW_ASOUND:-/proc/asound}"; PACTL="${AW_PACTL:-pactl}"; SLEEP="${AW_SLEEP:-sleep}"
+declare -A STRIKES=() LAST_RESET=() LAST_PTR=()
+log() { printf '%s audio-watchdog: %s\n' "$(date '+%F %T')" "$*"; }
+
+running_alsa_sinks() {   # prints: sink-name card device
+  "$PACTL" list sinks 2>/dev/null | awk '
+    /^Sink #/ { n = ""; s = ""; c = ""; d = "" }
+    /^[[:space:]]*State:/ { s = $2 }
+    /^[[:space:]]*Name:/ { n = $2 }
+    /alsa\.card = / { gsub(/"/, "", $3); c = $3 }
+    /alsa\.device = / { gsub(/"/, "", $3); d = $3; if (s == "RUNNING" && n ~ /^alsa_output\./ && c != "") print n, c, d }'
+}
+
+check_once() {
+  local name card dev f st ptr now seen=" "
+  now=$(date +%s)
+  while read -r name card dev; do
+    [[ -n "$name" ]] || continue
+    seen+="$name "
+    f="$ASOUND/card$card/pcm${dev}p/sub0/status"
+    if [[ -r "$f" ]]; then
+      st="$(awk '/^state:/ { print $2; exit }' "$f")"
+      ptr="$(awk '/hw_ptr/ { print $3; exit }' "$f")"
+    else
+      st="closed"; ptr=""
+    fi
+    if [[ "$st" == RUNNING && -n "$ptr" && "$ptr" != "${LAST_PTR[$name]:-}" ]]; then
+      STRIKES[$name]=0                       # sound is flowing
+    else
+      STRIKES[$name]=$(( ${STRIKES[$name]:-0} + 1 ))
+    fi
+    LAST_PTR[$name]="$ptr"
+    if (( STRIKES[$name] >= 2 )) && (( now - ${LAST_RESET[$name]:-0} >= COOLDOWN )); then
+      log "$name is frozen (card $card: state ${st:-?}, hw_ptr ${ptr:-none} not moving); resetting it"
+      "$PACTL" suspend-sink "$name" 1 >/dev/null 2>&1
+      "$SLEEP" 0.5
+      if "$PACTL" suspend-sink "$name" 0 >/dev/null 2>&1; then log "$name reset done"
+      else log "$name: resume failed"; fi
+      LAST_RESET[$name]=$now; STRIKES[$name]=0; LAST_PTR[$name]=""
+    fi
+  done < <(running_alsa_sinks)
+  for name in "${!STRIKES[@]}"; do          # forget sinks that are no longer running
+    [[ "$seen" == *" $name "* ]] || { unset "STRIKES[$name]"; unset "LAST_PTR[$name]"; }
+  done
+}
+
+log "started (check every ${INTERVAL}s)"
+i=0
+while :; do
+  check_once
+  i=$((i + 1)); (( ITER > 0 && i >= ITER )) && break
+  "$SLEEP" "$INTERVAL"
+done

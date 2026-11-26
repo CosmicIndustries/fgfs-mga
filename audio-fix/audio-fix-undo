@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Undo the 26 Nov 2026 audio fix: stop and remove the watchdog, remove the HDMI no-suspend rule.
+# Backups of anything replaced are in ~/.local/share/audio-fix/backup-20261126/.
+# The module copy (fix-sound-modules.sh) is undone separately, as root:
+#   sudo rm -rf /lib/modules/6.1.84-9-rk2410
+set -u
+systemctl --user disable --now audio-watchdog.service 2>/dev/null
+rm -f ~/.config/systemd/user/audio-watchdog.service ~/.local/bin/audio-watchdog
+systemctl --user daemon-reload
+rm -f ~/.config/wireplumber/main.lua.d/52-hdmi-nosuspend.lua
+echo "Watchdog and HDMI rule removed. The rule stops applying after: systemctl --user restart wireplumber (or a reboot)."
