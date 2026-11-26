@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- Cosmic Industries fleet round 2026-11-26: Lycoming IO-360-C1C6, 200 hp at 2700 rpm,
+     fuel injected, for the Piper Arrow III (PA-28R-201). Based on the PA28's O-360-A4A file;
+     volumetric efficiency tuned so full throttle at sea level gives about 200 hp in JSBSim. -->
+<piston_engine name="lycoming-IO-360-C1C6">
+    <minmp unit="INHG">8.3</minmp>
+    <maxmp unit="INHG">29.0</maxmp>
+    <displacement unit="IN3">361</displacement>
+    <maxhp>200</maxhp>
+    <volumetric-efficiency>0.78</volumetric-efficiency>
+    <cycles>4</cycles>
+    <idlerpm>650</idlerpm>
+    <maxrpm>2700</maxrpm>
+    <maxthrottle>1.0</maxthrottle>
+    <minthrottle>0.1</minthrottle>
+    <sparkfaildrop>0.1</sparkfaildrop>
+    <oil-pressure-rpm-max>1215</oil-pressure-rpm-max>
+</piston_engine>

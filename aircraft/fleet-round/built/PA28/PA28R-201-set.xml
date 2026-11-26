@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!-- Piper PA-28R-201 Arrow III. Cosmic Industries fleet round 2026-11-26.
+     Built on the PA28 Warrior/Archer package (Copyright (c) 2022 Josh Davidson (Octal450), GPL):
+     same airframe and cockpit, plus retractable gear, 200 hp IO-360-C1C6 and a constant-speed prop. -->
+<PropertyList include="PA28-main.xml">
+
+	<sim>
+		<description>Piper PA-28R-201 Arrow III (200hp, retractable)</description>
+		<long-description>Rough Arrow III for MGA's commercial and CFI stages: the PA28 Archer airframe and cockpit with retractable gear (keys g and G, or the gear lever), a 200 hp fuel-injected Lycoming IO-360-C1C6 and a constant-speed prop (prop lever on the quadrant, 2000 to 2700 rpm). The gear can't come up with weight on the wheels. Flight model tuned to about 137 KTAS at 75% power gear up and 830 fpm climb at gross.</long-description>
+		<flight-model>jsb</flight-model>
+		<aero>PA28R-201</aero>
+		<variant-of>PA28-161-160</variant-of>
+		<model>
+			<path type="string">Aircraft/PA28/Models/PA28R-201.xml</path>
+		</model>
+		<tags>
+			<tag n="8">retractable-gear</tag>
+			<tag n="11">variable-pitch</tag>
+		</tags>
+	</sim>
+
+	<controls>
+		<gear>
+			<gear-down type="bool">true</gear-down>
+		</gear>
+		<engines>
+			<engine n="0">
+				<propeller-pitch type="double">1.0</propeller-pitch>
+			</engine>
+		</engines>
+	</controls>
+
+</PropertyList>

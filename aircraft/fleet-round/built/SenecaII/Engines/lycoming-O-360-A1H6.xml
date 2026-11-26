@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+
+<!-- Copyright (c) 2022 Josh Davidson (Octal450) -->
+
+<!-- Cosmic Industries fleet round 2026-11-26: Seminole O-360-A1H6 / LO-360-A1H6, 180 hp at 2700 rpm,
+     from the PA28 Archer engine file (Josh Davidson, tuned by the Nov 22 engine audit). -->
+<piston_engine name="lycoming-O-360-A1H6">
+    <!-- Engine audit 2026-11-22: volumetric-efficiency 0.70 fits fuel flow to MGA's Archer tables (9.5 gph at 65%). -->
+	
+    <minmp unit="INHG">8.3</minmp>
+    <maxmp unit="INHG">28.5</maxmp>
+    <displacement unit="IN3">360</displacement>
+    <maxhp>180</maxhp>
+    <volumetric-efficiency>0.70</volumetric-efficiency>
+    <cycles>4</cycles>
+    <idlerpm>600</idlerpm>
+    <maxrpm>2700</maxrpm>
+    <maxthrottle>1.0</maxthrottle>
+    <minthrottle>0.1</minthrottle>
+    <sparkfaildrop>0.1</sparkfaildrop>
+    <oil-pressure-rpm-max>1215</oil-pressure-rpm-max>
+
+</piston_engine>

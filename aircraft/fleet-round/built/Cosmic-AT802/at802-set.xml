@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<!-- Air Tractor AT-802 (rough). Cosmic Industries fleet round 2026-11-26. -->
+<PropertyList>
+	<sim>
+		<description>Air Tractor AT-802 (rough)</description>
+		<long-description>Single-seat turboprop ag plane. Rough model sized from published specs: 59 ft 3 in span, 401 sq ft wing, 6,505 lb empty, 16,000 lb max, 1,350 shp PT6A-67AG, 800 gal hopper.</long-description>
+		<author>Cosmic Industries (rough model, generated)</author>
+		<status>alpha</status>
+		<aircraft-version>0.1</aircraft-version>
+		<flight-model>yasim</flight-model>
+		<aero>at802-yasim</aero>
+		<fuel-fraction>0.6</fuel-fraction>
+		<model>
+			<path>Aircraft/Cosmic-AT802/Models/Cosmic-AT802.xml</path>
+		</model>
+		<view n="0">
+			<internal archive="y">true</internal>
+			<config>
+				<x-offset-m archive="y">0.000</x-offset-m>
+				<y-offset-m archive="y">1.180</y-offset-m>
+				<z-offset-m archive="y">5.350</z-offset-m>
+				<pitch-offset-deg>-8</pitch-offset-deg>
+			</config>
+		</view>
+		<weight n="0">
+			<name>Pilot</name>
+			<weight-lb>190</weight-lb>
+			<max-lb>300</max-lb>
+		</weight>
+		<weight n="1">
+			<name>Hopper load</name>
+			<weight-lb>0</weight-lb>
+			<max-lb>6670</max-lb>
+		</weight>
+		<tags>
+			<tag>agricultural</tag>
+			<tag>tailwheel</tag>
+			<tag>single-engine</tag>
+		</tags>
+	</sim>
+	<controls>
+		<engines>
+			<engine n="0">
+				<magnetos type="int">3</magnetos>
+				<mixture type="double">1</mixture>
+				<condition type="double">1</condition>
+				<propeller-pitch type="double">1</propeller-pitch>
+			</engine>
+		</engines>
+	</controls>
+	<consumables>
+		<fuel>
+			<tank n="0"><selected type="bool">true</selected></tank>
+			<tank n="1"><selected type="bool">true</selected></tank>
+		</fuel>
+	</consumables>
+</PropertyList>

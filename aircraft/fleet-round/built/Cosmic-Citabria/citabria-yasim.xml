@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<!-- American Champion 7GCAA Citabria (rough): YASim flight model (surface x/y/z are YASim mid-chord root points), Cosmic Industries fleet round 2026-11-26.
+     Solved by YASim from published figures: approach 55 kt at 7.5 deg AoA, cruise 109 kt at 8000 ft.
+     Empty 1037 lb, gross 1650 lb. Model x aft = YASim -x. -->
+<airplane mass="1037" version="YASIM_VERSION_CURRENT">
+
+  <approach speed="55" aoa="7.5" fuel="0.3">
+    <control-setting axis="/controls/engines/engine[0]/throttle" value="0.25"/>
+    <control-setting axis="/controls/engines/engine[0]/mixture" value="1"/>
+    <control-setting axis="/controls/engines/engine[0]/condition" value="1"/>
+    <control-setting axis="/controls/engines/engine[0]/propeller-pitch" value="1"/>
+    <control-setting axis="/controls/flight/flaps" value="0.00"/>
+    <solve-weight idx="0" weight="170"/>
+  </approach>
+
+  <cruise speed="109" alt="8000" fuel="0.5">
+    <control-setting axis="/controls/engines/engine[0]/throttle" value="1.00"/>
+    <control-setting axis="/controls/engines/engine[0]/mixture" value="1"/>
+    <control-setting axis="/controls/engines/engine[0]/condition" value="1"/>
+    <control-setting axis="/controls/engines/engine[0]/propeller-pitch" value="0.9"/>
+    <control-setting axis="/controls/flight/flaps" value="0"/>
+    <solve-weight idx="0" weight="170"/>
+  </cruise>
+
+  <cockpit x="-2.200" y="-0.000" z="0.620"/>
+
+  <fuselage ax="-0.300" ay="0" az="0.000" bx="-6.480" by="0" bz="0.220" width="0.76" taper="0.35" midpoint="0.3"/>
+
+  <wing x="-2.251" y="0.000" z="0.860" length="5.095" chord="1.501" sweep="0" dihedral="1.0" camber="0.060" incidence="1.5" twist="-1.5" taper="1.00" idrag="1.00">
+    <stall aoa="15" width="4" peak="1.5"/>
+    <flap1 start="0.52" end="0.97" lift="1.3" drag="1.1"/>
+    <control-input axis="/controls/flight/flaps" control="FLAP0"/>
+    <control-input axis="/controls/flight/aileron" control="FLAP1" split="true"/>
+    <control-input axis="/controls/flight/aileron-trim" control="FLAP1" split="true"/>
+    <control-output control="FLAP0" prop="/surface-positions/flap-pos-norm"/>
+    <control-output control="FLAP1" side="left" prop="/surface-positions/left-aileron-pos-norm"/>
+    <control-output control="FLAP1" side="right" prop="/surface-positions/right-aileron-pos-norm"/>
+    <control-speed control="FLAP0" transition-time="6"/>
+  </wing>
+
+  <hstab x="-6.260" y="0.000" z="0.220" length="1.600" chord="0.920" sweep="0" taper="0.78" incidence="0">
+    <stall aoa="16" width="4" peak="1.5"/>
+    <flap0 start="0" end="1" lift="1.9" drag="1.2"/>
+    <control-input axis="/controls/flight/elevator" control="FLAP0"/>
+    <control-input axis="/controls/flight/elevator-trim" control="FLAP0"/>
+    <control-output control="FLAP0" prop="/surface-positions/elevator-pos-norm"/>
+  </hstab>
+
+  <vstab x="-6.090" y="0.000" z="0.300" length="1.200" chord="1.380" sweep="28.4" taper="0.58">
+    <stall aoa="16" width="4" peak="1.5"/>
+    <flap0 start="0" end="1" lift="1.4" drag="1.2"/>
+    <control-input axis="/controls/flight/rudder" control="FLAP0" invert="true"/>
+    <control-input axis="/controls/flight/rudder-trim" control="FLAP0" invert="true"/>
+    <control-output control="FLAP0" prop="/surface-positions/rudder-pos-norm" min="1" max="-1"/>
+  </vstab>
+
+  <propeller x="-0.600" y="0.000" z="0.000" mass="300" moment="7.4" radius="0.940" cruise-speed="100" cruise-rpm="2450" cruise-alt="8000"
+             cruise-power="112" takeoff-power="150" takeoff-rpm="2700">
+    <actionpt x="-0.120" y="0.000" z="0.000"/>
+    <piston-engine eng-power="150" eng-rpm="2700" displacement="320" compression="7.0">
+      <control-input axis="/controls/engines/engine[0]/magnetos" control="MAGNETOS"/>
+      <control-input axis="/controls/engines/engine[0]/throttle" control="THROTTLE"/>
+      <control-input axis="/controls/engines/engine[0]/starter" control="STARTER"/>
+      <control-input axis="/controls/engines/engine[0]/mixture" control="MIXTURE"/>
+    </piston-engine>
+  </propeller>
+
+  <!-- main gear (spring steel legs) and steerable tailwheel; tail sits on its wheel at 12.0 deg -->
+  <gear x="-1.300" y="0.900" z="-1.180" compression="0.12" spring="0.9" damp="1.2">
+    <control-input axis="/controls/gear/brake-left" control="BRAKE"/>
+    <control-input axis="/controls/gear/brake-parking" control="BRAKE"/>
+  </gear>
+  <gear x="-1.300" y="-0.900" z="-1.180" compression="0.12" spring="0.9" damp="1.2">
+    <control-input axis="/controls/gear/brake-right" control="BRAKE"/>
+    <control-input axis="/controls/gear/brake-parking" control="BRAKE"/>
+  </gear>
+  <gear x="-6.380" y="0.000" z="-0.100" compression="0.06" spring="0.6" damp="1.5" sfric="0.8" dfric="0.6">
+    <control-input axis="/controls/flight/rudder" control="STEER" square="true" src0="-1" src1="1" dst0="-0.45" dst1="0.45"/>
+  </gear>
+
+  <tank x="-2.101" y="1.528" z="0.860" capacity="117"/>
+  <tank x="-2.101" y="-1.528" z="0.860" capacity="117"/>
+
+  <weight x="-2.300" y="0.000" z="-0.050" mass-prop="/sim/weight[0]/weight-lb"/>
+  <weight x="-3.050" y="0.000" z="-0.050" mass-prop="/sim/weight[1]/weight-lb"/>
+  <!-- nose ballast: engine and firewall-forward mass, tuned with the YASim solver to put the CG near 25-28% MAC -->
+  <ballast x="-0.500" y="0.000" z="0.000" mass="234"/>
+</airplane>

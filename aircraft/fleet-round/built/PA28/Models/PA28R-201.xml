@@ -1,0 +1,167 @@
+<?xml version="1.0"?>
+<!-- Piper PA-28R-201 Arrow III, Cosmic Industries fleet round 2026-11-26.
+     Uses the PA28 Archer model (Josh Davidson / Octal450) unchanged, plus:
+     - wheel fairings hidden (the Arrow has none)
+     - the three gear legs swing up into the wells as the gear retracts
+       (mains inboard into the wing, nose gear aft), then the PA28 model hides them
+     - gear selector, three green lights, gear-unsafe light and a prop lever (arrow-addons.ac)
+     Animation and model indices start at 300 so they don't overwrite the Archer's own. -->
+<PropertyList include="PA28-161-160.xml">
+
+	<animation n="300">
+		<name>Arrow: no wheel fairings</name>
+		<type>select</type>
+		<object-name>gear.fairing.L</object-name>
+		<object-name>gear.fairing.R</object-name>
+		<condition><false/></condition>
+	</animation>
+
+	<animation n="301">
+		<name>Arrow: left main retracts inboard</name>
+		<type>rotate</type>
+		<object-name>LeftGear</object-name>
+		<property>gear/gear[1]/position-norm</property>
+		<factor>-88</factor>
+		<offset-deg>88</offset-deg>
+		<center><x-m>-0.72</x-m><y-m>-1.37</y-m><z-m>-0.66</z-m></center>
+		<axis><x>1</x><y>0</y><z>0</z></axis>
+	</animation>
+
+	<animation n="302">
+		<name>Arrow: right main retracts inboard</name>
+		<type>rotate</type>
+		<object-name>RightGear</object-name>
+		<property>gear/gear[2]/position-norm</property>
+		<factor>88</factor>
+		<offset-deg>-88</offset-deg>
+		<center><x-m>-0.72</x-m><y-m>1.37</y-m><z-m>-0.66</z-m></center>
+		<axis><x>1</x><y>0</y><z>0</z></axis>
+	</animation>
+
+	<animation n="303">
+		<name>Arrow: nose gear retracts aft</name>
+		<type>rotate</type>
+		<object-name>NoseGear</object-name>
+		<property>gear/gear[0]/position-norm</property>
+		<factor>90</factor>
+		<offset-deg>-90</offset-deg>
+		<center><x-m>-2.43</x-m><y-m>0</y-m><z-m>-0.45</z-m></center>
+		<axis><x>0</x><y>1</y><z>0</z></axis>
+	</animation>
+
+	<model n="300">
+		<name>ArrowAddons</name>
+		<path>arrow-addons.ac</path>
+	</model>
+
+	<animation n="304">
+		<type>translate</type>
+		<object-name>ArrowGearLever</object-name>
+		<property>controls/gear/gear-down</property>
+		<factor>-0.05</factor>
+		<offset-m>0.05</offset-m>
+		<axis><x>0</x><y>0</y><z>1</z></axis>
+	</animation>
+
+	<animation n="305">
+		<type>pick</type>
+		<object-name>ArrowGearLever</object-name>
+		<object-name>ArrowGearPlate</object-name>
+		<action>
+			<button>0</button>
+			<repeatable>false</repeatable>
+			<binding>
+				<command>property-toggle</command>
+				<property>controls/gear/gear-down</property>
+			</binding>
+		</action>
+		<hovered>
+			<binding>
+				<command>set-tooltip</command>
+				<tooltip-id>arrow-gear</tooltip-id>
+				<label>Landing gear (click to raise or lower)</label>
+			</binding>
+		</hovered>
+	</animation>
+
+	<animation n="306">
+		<type>select</type>
+		<object-name>ArrowGearLightNose.on</object-name>
+		<object-name>ArrowGearLightLeft.on</object-name>
+		<object-name>ArrowGearLightRight.on</object-name>
+		<condition>
+			<greater-than-equals><property>gear/gear[0]/position-norm</property><value>0.999</value></greater-than-equals>
+		</condition>
+	</animation>
+
+	<animation n="307">
+		<type>select</type>
+		<object-name>ArrowGearUnsafe</object-name>
+		<condition>
+			<or>
+				<and>
+					<greater-than><property>gear/gear[0]/position-norm</property><value>0.001</value></greater-than>
+					<less-than><property>gear/gear[0]/position-norm</property><value>0.999</value></less-than>
+				</and>
+				<equals><property>fdm/jsbsim/systems/gear/warning-horn</property><value>1</value></equals>
+			</or>
+		</condition>
+	</animation>
+
+	<animation n="308">
+		<type>translate</type>
+		<object-name>ArrowPropLever</object-name>
+		<property>controls/engines/engine[0]/propeller-pitch</property>
+		<factor>-0.05</factor>
+		<axis><x>1</x><y>0</y><z>0</z></axis>
+	</animation>
+
+	<animation n="309">
+		<type>pick</type>
+		<object-name>ArrowPropLever</object-name>
+		<action>
+			<button>0</button>
+			<repeatable>true</repeatable>
+			<binding>
+				<command>property-adjust</command>
+				<property>controls/engines/engine[0]/propeller-pitch</property>
+				<step>0.05</step><min>0</min><max>1</max>
+			</binding>
+		</action>
+		<action>
+			<button>1</button>
+			<repeatable>true</repeatable>
+			<binding>
+				<command>property-adjust</command>
+				<property>controls/engines/engine[0]/propeller-pitch</property>
+				<step>-0.05</step><min>0</min><max>1</max>
+			</binding>
+		</action>
+		<action>
+			<button>3</button>
+			<binding>
+				<command>property-adjust</command>
+				<property>controls/engines/engine[0]/propeller-pitch</property>
+				<step>0.05</step><min>0</min><max>1</max>
+			</binding>
+		</action>
+		<action>
+			<button>4</button>
+			<binding>
+				<command>property-adjust</command>
+				<property>controls/engines/engine[0]/propeller-pitch</property>
+				<step>-0.05</step><min>0</min><max>1</max>
+			</binding>
+		</action>
+		<hovered>
+			<binding>
+				<command>set-tooltip</command>
+				<tooltip-id>arrow-prop</tooltip-id>
+				<label>Propeller: %3.0f%% (2000 to 2700 rpm)</label>
+				<property>controls/engines/engine[0]/propeller-pitch</property>
+				<mapping>percent</mapping>
+			</binding>
+		</hovered>
+	</animation>
+
+</PropertyList>

@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<!-- Cosmic Industries fleet round 2026-11-26: Piper Arrow III retractable gear.
+     Gear selector is /controls/gear/gear-down (keys g / G). Gear travels in about 6 s.
+     A squat switch (weight on wheels) blocks retraction on the ground, like the real one.
+     Gear-up warning horn property: systems/gear/warning-horn (throttle back with gear up). -->
+<system name="PA28R: Landing gear">
+
+	<channel name="Gear">
+
+		<switch name="systems/gear/squat">
+			<default value="0"/>
+			<test logic="OR" value="1">
+				gear/unit[1]/WOW eq 1
+				gear/unit[2]/WOW eq 1
+			</test>
+		</switch>
+
+		<switch name="systems/gear/cmd">
+			<default value="gear/gear-cmd-norm"/>
+			<test value="1">
+				systems/gear/squat eq 1
+			</test>
+		</switch>
+
+		<kinematic name="systems/gear/position">
+			<input>systems/gear/cmd</input>
+			<traverse>
+				<setting>
+					<position>0</position>
+					<time>0</time>
+				</setting>
+				<setting>
+					<position>1</position>
+					<time>6</time>
+				</setting>
+			</traverse>
+			<output>gear/gear-pos-norm</output>
+		</kinematic>
+
+		<switch name="systems/gear/warning-horn">
+			<default value="0"/>
+			<test logic="AND" value="1">
+				gear/gear-pos-norm lt 0.99
+				fcs/throttle-pos-norm[0] lt 0.25
+				systems/gear/squat eq 0
+			</test>
+		</switch>
+
+		<switch name="systems/gear/three-green">
+			<default value="0"/>
+			<test value="1">
+				gear/gear-pos-norm ge 0.999
+			</test>
+		</switch>
+
+		<switch name="systems/gear/in-transit">
+			<default value="0"/>
+			<test logic="AND" value="1">
+				gear/gear-pos-norm gt 0.001
+				gear/gear-pos-norm lt 0.999
+			</test>
+		</switch>
+
+	</channel>
+
+</system>

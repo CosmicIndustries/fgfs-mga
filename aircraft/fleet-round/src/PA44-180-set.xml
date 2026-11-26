@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- Piper PA-44-180 Seminole. Cosmic Industries fleet round 2026-11-26.
+     Built on the Seneca II package (Torsten Dreyer, GPL v2+): Seneca cockpit, systems and body,
+     Seminole T-tail, wing, weights, two 180 hp O-360s and 74 in props. -->
+<PropertyList include="SenecaII-set.xml">
+	<sim>
+		<description>Piper PA-44-180 Seminole (rough)</description>
+		<long-description>Rough Seminole for MGA's multi-engine stage. Seneca II cockpit and body with a Seminole T-tail; the flight model is the Seneca's resized to the Seminole: 183.8 sq ft wing, 2450 lb empty, 3800 lb gross, two 180 hp Lycoming O-360s with counter-rotating 74 in feathering props. Offline check: about 155 KTAS at 78% power at 5500 ft, about 1,050 fpm on two engines and 230 fpm on one (feathered) at gross.</long-description>
+		<aero>PA44-180-jsbsim</aero>
+		<model>
+			<path>Aircraft/SenecaII/Models/PA44-180.xml</path>
+		</model>
+	</sim>
+</PropertyList>

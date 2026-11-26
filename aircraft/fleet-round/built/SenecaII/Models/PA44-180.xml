@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<!-- Piper PA-44-180 Seminole, Cosmic Industries fleet round 2026-11-26.
+     Rough model: the Seneca II model (Torsten Dreyer, GPL v2+) with its low tail hidden and a
+     Seminole T-tail added (fin, rudder, fin-top stabilator), sized from published specs
+     (height 8.5 ft, stabilator span about 12.8 ft). Cockpit, cabin, wings, nacelles and gear
+     are still the Seneca's. Indices start at 400/60 so the Seneca's own entries stay. -->
+<PropertyList include="SenecaII.xml">
+
+	<animation n="400">
+		<name>Seminole: hide the Seneca tail</name>
+		<type>select</type>
+		<object-name>Fin</object-name>
+		<object-name>Rudder</object-name>
+		<object-name>Stabilizer</object-name>
+		<object-name>Beacon</object-name>
+		<condition><false/></condition>
+	</animation>
+
+	<model n="60">
+		<name>SeminoleTTail</name>
+		<path>Aircraft/SenecaII/Models/seminole-ttail.xml</path>
+	</model>
+
+	<!-- the Seneca's fin-top beacon moves down onto the T-tail pod -->
+	<model n="52">
+		<offsets>
+			<x-m>3.66</x-m>
+			<y-m>0</y-m>
+			<z-m>2.62</z-m>
+		</offsets>
+	</model>
+
+</PropertyList>
