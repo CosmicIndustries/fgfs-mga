@@ -12,11 +12,11 @@ SKIP = ("victory", "handedge", "grip", "thumbsup", "fist", "point")
 
 def render(parts, tex, view, ppm=260):
     # screen: (sx right, sy up, depth toward viewer)
-    if view == "front":    # viewer at +x looking -x, right = +y
-        M = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]], float)
-    elif view == "back":   # viewer at -x, right = -y
+    if view == "front":    # the walker faces -x: viewer at -x, screen right = his left (-y)
         M = np.array([[0, -1, 0], [0, 0, 1], [-1, 0, 0]], float)
-    else:                  # viewer at -y (wearer's right side), right = +x
+    elif view == "back":   # viewer at +x, screen right = +y
+        M = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]], float)
+    else:                  # viewer at -y (his left side), screen right = +x (his back)
         M = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], float)
     W, H = int(1.8 * ppm), int(2.0 * ppm)
     img = np.full((H, W, 3), 235.0)

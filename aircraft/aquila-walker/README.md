@@ -7,7 +7,8 @@ Aquila Flight Program flight suit, on every plane in the fgfs-mga fleet.
     bash install.sh --dry-run  # what each plane would get
     bash install.sh --undo     # put everything back
 
-In the sim: **Walker > Toggle Walker out/in**, then **View > Walker Orbit View** or **Walk View**.
+In the sim: **Walker > Toggle Walker out/in**, then **View > Walker Orbit View** to see him
+(or press `V` until it comes up). **Walk View** looks through his eyes, so he isn't visible there.
 `w` walks, `W` runs, `s`/`S` back, `a`/`d` step sideways (in the walk views only).
 **Walker > Select Theme > Waldo Aquila Flight Suit** brings the suit back if you pick another theme.
 
@@ -16,9 +17,15 @@ In the sim: **Walker > Toggle Walker out/in**, then **View > Walker Orbit View**
 ## The suit
 
 One-piece suit from the Aquila Uniform Systems boards (v1.2 / v1.3): black-seafoam #0B2220 base,
-acid-lime #DFFF00 yoke, torso side panels, outer leg and top-of-arm stripes and cuffs, electric-cyan
-#00E5FF piping and front zip, segmented reflective ivory/silver bands on the calves and upper arms,
-the Aquila patch on the right chest and the pilot wings on the left, a large Aquila patch on the back.
+acid-lime #DFFF00 shoulder caps and chest swooshes running from the shoulders in to the belt (front
+and back), electric-cyan #00E5FF piping on the swooshes, shoulder seams and sides, a cyan front zip,
+a dark belt with a silver buckle, lime outer-leg stripes, thigh cargo pockets with lime flaps, lime
+bands below the knees, a segmented reflective ivory/silver band above the boots, lime arm caps,
+armbands and cuffs, the Aquila patch on his right chest, pilot wings on his left chest, a small patch
+on the left upper arm and a large Aquila patch on the back.
+
+The walker model faces -x (FlightGear's forward), so "his right" is +y; v1 of the bake had the chest
+patches and zip on the back by mistake.
 
 It is a new texture on FlightGear's own flight-suit mesh (outfit 5, beside the stock outfits 0-4),
 so it costs one 1024x1024 texture per gender and no extra geometry while the walker is hidden.
