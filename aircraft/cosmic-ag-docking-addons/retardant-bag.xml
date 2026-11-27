@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fire retardant bag cradled in the mothership's belly capture ring
+     (Cosmic Ag docking demo). About 1,060 L, roughly 1,150 kg full; drawn
+     only, the flight model does not carry its weight. Shown unless
+     cosmic/no-bag is set. Clears the ground by 0.17 m sitting on the
+     tailwheel (ground test: retardant-bag-ground-test.png).
+     Geometry: retardant-bag.ac from gen_formation_addons.py. -->
+<PropertyList>
+  <path>retardant-bag.ac</path>
+  <animation>
+    <type>select</type>
+    <object-name>retardant_bag</object-name>
+    <object-name>retardant_bag_band</object-name>
+    <object-name>retardant_bag_straps</object-name>
+    <object-name>retardant_bag_shackles</object-name>
+    <object-name>retardant_dump_valve</object-name>
+    <condition><not><property>cosmic/no-bag</property></not></condition>
+  </animation>
+</PropertyList>
